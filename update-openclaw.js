@@ -1,7 +1,7 @@
 const fs = require('fs');
 const content = 
 // ETHV OpenClaw Service
-const EXTRACTOR_URL = 'http://localhost:3010';
+const EXTRACTOR_URL = import.meta?.env?.VITE_EXTRACTOR_URL || 'http://localhost:3010';
 
 const log = (level, message, data = null) => {
   const entry = { time: new Date().toISOString(), level, message, data };
@@ -55,7 +55,7 @@ async function extractTextFromFile(file) {
 
 async function sendToAgent(message) {
   log('INFO', 'sendToAgent called', { msgLen: message?.length });
-  const token = 'bd1177ff2d28a2c4ceew1e08fee975fc9';
+  const token = import.meta?.env?.VITE_OPENCLAW_TOKEN || '';
   const response = await fetch('/v1/chat/completions', {
     method: 'POST',
     headers: { 'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json' },

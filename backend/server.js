@@ -3,9 +3,14 @@ const cors = require('cors');
 const http = require('http');
 const https = require('https');
 const { Client, GatewayIntentBits } = require('discord.js');
+require('dotenv').config();
 
 const app = express();
-const PORT = process.env.PORT || 3002;
+const PORT = process.env.PORT ;
+const OPENCLAW_HOST = process.env.OPENCLAW_HOST ;
+const OPENCLAW_PORT = process.env.OPENCLAW_PORT ;
+const OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN ;
+const JINA_URL = process.env.JINA_URL ;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
@@ -17,9 +22,6 @@ const discordClient = new Client({
     GatewayIntentBits.MessageContent
   ]
 });
-
-const OPENCLAW_HOST = '127.0.0.1';
-const OPENCLAW_PORT = 18789;
 
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -77,7 +79,7 @@ function httpGet(url) {
 // LinkedIn scraper using Jina AI
 async function scrapeWithJina(url) {
   try {
-    const text = await httpGet('https://r.jina.ai/' + encodeURIComponent(url));
+    const text = await httpGet(JINA_URL + encodeURIComponent(url));
     return { success: true, text: text, url: url };
   } catch (error) {
     return { success: false, error: error.message };
@@ -150,7 +152,7 @@ app.post('/api/analyze-profile', async (req, res) => {
       headers: { 
         'Content-Type': 'application/json', 
         'Content-Length': Buffer.byteLength(requestBody),
-        'Authorization': 'Bearer bd1177ff2d28a2c4ceew1e08fee975fc9'
+        'Authorization': `Bearer ${OPENCLAW_TOKEN}`
       }
     };
 

@@ -1,6 +1,6 @@
 // ETHV Supabase Service
-const SUPABASE_URL = 'https://dfvqmjwurlqkbduqdjyr.supabase.co';
-const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImRmdnFtand1cmxxa2JkdXFkanlyIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3Mzk4MTc1NywiZXhwIjoyMDg5NTU3NzU3fQ.SyocCXuugpJRrVXBs6Wlcb1IuAyXPs9J4gF9_wlPibs';
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL || 'https://dfvqmjwurlqkbduqdjyr.supabase.co';
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_KEY || '';
 
 async function saveCVAnalysis(data) {
   const payload = {

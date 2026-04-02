@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Upload, FileText, Check, AlertCircle, Loader2, Wifi, WifiOff, Terminal, Mail, Phone, MapPin, Linkedin, Github, Globe, FileDown, Briefcase, Clock, X, ChevronDown, ChevronUp } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { analyzeCV, checkConnection, getLogs, clearLogs, generateCoverLetter, generateInterviewPrep, analyzeJobOffer } from '../services/openclaw';
@@ -14,6 +15,7 @@ interface ContactInfo {
 }
 
 export default function CVUpload() {
+  const navigate = useNavigate();
   const [file, setFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<'idle' | 'success' | 'error'>('idle');
@@ -99,7 +101,10 @@ export default function CVUpload() {
       // Professional info
       if (result.current_position) setCurrentPosition(result.current_position);
       if (result.company) setCompany(result.company);
-      if (result.skills) setExtractedSkills(result.skills);
+      if (result.skills) {
+        setExtractedSkills(result.skills);
+        localStorage.setItem('ethv_cv_skills', JSON.stringify(result.skills));
+      }
       if (result.experience_years) setExperienceYears(result.experience_years);
       if (result.certifications) setCertifications(result.certifications);
       if (result.languages) setLanguages(result.languages);
@@ -640,8 +645,11 @@ export default function CVUpload() {
               <div className="bg-emerald-500/10 border border-emerald-500/20 p-4 rounded-xl text-emerald-400 text-sm">
                 Great! We've found {extractedSkills.length} skills. You can now proceed to validate them to earn your on-chain credentials.
               </div>
-              <button className="w-full bg-zinc-100 hover:bg-white text-black font-bold py-3 rounded-xl transition-all">
-                Proceed to Validation
+              <button
+                onClick={() => navigate('/validation')}
+                className="w-full bg-zinc-100 hover:bg-white text-black font-bold py-3 rounded-xl transition-all"
+              >
+                Proceed to Validation →
               </button>
             </motion.div>
           )}

@@ -166,10 +166,9 @@ app.use('/swagger', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
 }));
 app.get('/swagger.json', (req, res) => res.json(swaggerSpec));
 
-const OPENCLAW_HOST = process.env.OPENCLAW_HOST || '127.0.0.1';
-const OPENCLAW_PORT = parseInt(process.env.OPENCLAW_PORT || '18789');
-const OPENCLAW_TOKEN = process.env.OPENCLAW_TOKEN || '';
-const OPENCLAW_MODEL = process.env.OPENCLAW_MODEL || 'MiniMax-M2.5';
+const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY || '';
+const MINIMAX_BASE_URL = process.env.MINIMAX_BASE_URL || 'https://api.minimax.io/anthropic';
+const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-M2.5';
 const JINA_URL = process.env.JINA_URL || 'https://r.jina.ai/';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -436,25 +435,17 @@ async function extractTextFromFile(fileBuffer, filename) {
     }
   }
 
-  // PDF: extraer texto con pdfjs-dist
+  // PDF: extraer texto con pdf-parse
   if (ext === 'pdf') {
-    // Extracción de texto con pdfjs-dist
     try {
-      const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.mjs');
-      const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(fileBuffer) });
-      const pdfDoc = await loadingTask.promise;
-      let fullText = '';
-      for (let i = 1; i <= pdfDoc.numPages; i++) {
-        const page = await pdfDoc.getPage(i);
-        const content = await page.getTextContent();
-        fullText += content.items.map(item => item.str).join(' ') + '\n';
-      }
-      if (fullText.trim().length > 50) {
-        console.log('[OCR] pdfjs-dist extrajo', fullText.length, 'chars');
-        return fullText;
+      const pdfParse = require('pdf-parse');
+      const result = await pdfParse(fileBuffer);
+      if (result.text && result.text.trim().length > 20) {
+        console.log('[OCR] pdf-parse extrajo', result.text.length, 'chars');
+        return result.text;
       }
     } catch (e) {
-      console.log('[OCR] pdfjs-dist falló:', e.message);
+      console.log('[OCR] pdf-parse falló:', e.message);
     }
 
     console.log('[OCR] No se pudo extraer texto del PDF');
@@ -477,36 +468,56 @@ async function extractTextFromFile(fileBuffer, filename) {
 }
 
 // ============================================
-// ANÁLISIS CON OPENCLAW
+// ANÁLISIS CON MINIMAX (Anthropic Messages API)
 // ============================================
 
-function callOpenClaw(prompt) {
+function callMiniMax(prompt, maxTokens = 4096, prefillAssistant = null) {
+
+  console.log('[MiniMax] Prompt length:', prompt.length);
+  console.log('[MiniMax] prompt:', prompt);
+
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({
-      model: OPENCLAW_MODEL,
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 2000,
-      temperature: 0.3
-    });
+    const messages = [{ role: 'user', content: prompt }];
+    // Prefill forces model to continue from this string — skips thinking preamble
+    if (prefillAssistant) {
+      messages.push({ role: 'assistant', content: prefillAssistant });
+    }
+    const payload = { model: MINIMAX_MODEL, max_tokens: maxTokens, messages };
+    const body = JSON.stringify(payload);
+
+    const url = new URL(MINIMAX_BASE_URL + '/v1/messages');
 
     const options = {
-      hostname: OPENCLAW_HOST,
-      port: OPENCLAW_PORT,
-      path: '/v1/chat/completions',
+      hostname: url.hostname,
+      path: url.pathname,
       method: 'POST',
       headers: {
-        'Authorization': 'Bearer ' + OPENCLAW_TOKEN,
-        'Content-Type': 'application/json',
+        'x-api-key': MINIMAX_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
         'Content-Length': Buffer.byteLength(body)
       }
     };
 
-    const req = http.request(options, (res) => {
+    const req = https.request(options, (res) => {
       let data = '';
       res.on('data', chunk => data += chunk);
       res.on('end', () => {
-        try { resolve(JSON.parse(data)); }
-        catch (e) { reject(new Error('OpenClaw parse error: ' + e.message)); }
+        console.log('[MiniMax] HTTP status:', res.statusCode);
+        console.log('[MiniMax] Raw response:', data.slice(0, 500));
+        try {
+          const parsed = JSON.parse(data);
+          const textBlock = (parsed?.content || []).find(c => c.type === 'text');
+          let text = textBlock?.text || '';
+          // If we used prefill, prepend it back since model continues from there
+          if (prefillAssistant && !text.trimStart().startsWith(prefillAssistant)) {
+            text = prefillAssistant + text;
+          }
+          console.log('[MiniMax] Text length:', text.length, '| preview:', text.slice(0, 80));
+          resolve({ choices: [{ message: { content: text } }] });
+        } catch (e) {
+          reject(new Error('MiniMax parse error: ' + e.message + ' | raw: ' + data.slice(0, 300)));
+        }
       });
     });
 
@@ -601,18 +612,19 @@ Responde SOLO el JSON, sin texto adicional.`;
     let cvData = { skills: [], experience_years: 0, web3_relevance: 'low' };
 
     try {
-      console.log('[CV] Enviando a OpenClaw...');
-      const aiResult = await callOpenClaw(prompt);
-      const content = aiResult?.choices?.[0]?.message?.content || '';
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      console.log('[CV] Enviando a MiniMax...');
+      const aiResult = await callMiniMax(prompt);
+      const raw = aiResult?.choices?.[0]?.message?.content || '';
+      const cleaned = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
       if (jsonMatch) {
         cvData = JSON.parse(jsonMatch[0]);
-        console.log('[CV] JSON extraído correctamente');
+        console.log('[CV] JSON extraído correctamente, skills:', cvData.skills?.length);
       } else {
-        console.log('[CV] No se encontró JSON en respuesta de OpenClaw');
+        console.log('[CV] No JSON found. Preview:', raw.slice(0, 200));
       }
     } catch (e) {
-      console.error('[CV] OpenClaw error:', e.message);
+      console.error('[CV] MiniMax error:', e.message);
     }
 
     // Fallback regex: rellenar campos de contacto que la IA no extrajo
@@ -652,41 +664,46 @@ Responde SOLO el JSON, sin texto adicional.`;
 });
 
 // ============================================
-// PROXY OPENCLAW (mantener compatibilidad)
+// PROXY MINIMAX (compatibilidad OpenAI → Anthropic)
 // ============================================
 
 app.post('/v1/chat/completions', async (req, res) => {
   try {
-    const body = JSON.stringify(req.body);
-    const headers = {
-      'Content-Type': 'application/json',
-      'Content-Length': Buffer.byteLength(body)
-    };
+    const { messages, max_tokens } = req.body;
+    const body = JSON.stringify({
+      model: MINIMAX_MODEL,
+      max_tokens: max_tokens || 2000,
+      messages
+    });
 
-    if (req.headers.authorization) {
-      headers['Authorization'] = req.headers.authorization;
-    }
-
+    const url = new URL(MINIMAX_BASE_URL + '/v1/messages');
     const options = {
-      hostname: OPENCLAW_HOST,
-      port: OPENCLAW_PORT,
-      path: '/v1/chat/completions',
+      hostname: url.hostname,
+      path: url.pathname,
       method: 'POST',
-      headers
+      headers: {
+        'x-api-key': MINIMAX_API_KEY,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'Content-Length': Buffer.byteLength(body)
+      }
     };
 
-    const proxyReq = http.request(options, (proxyRes) => {
+    const proxyReq = https.request(options, (proxyRes) => {
       let data = '';
       proxyRes.on('data', chunk => data += chunk);
       proxyRes.on('end', () => {
-        res.status(proxyRes.statusCode || 200);
-        res.setHeader('Content-Type', 'application/json');
-        try { res.json(JSON.parse(data)); } catch { res.send(data); }
+        try {
+          const parsed = JSON.parse(data);
+          // Devolver en formato OpenAI para compatibilidad con el frontend
+          const text = parsed?.content?.[0]?.text || '';
+          res.json({ choices: [{ message: { role: 'assistant', content: text } }] });
+        } catch { res.send(data); }
       });
     });
 
     proxyReq.on('error', (err) => {
-      res.status(500).json({ error: 'Failed to proxy to OpenClaw', details: err.message });
+      res.status(500).json({ error: 'Failed to call MiniMax', details: err.message });
     });
 
     proxyReq.write(body);
@@ -768,50 +785,232 @@ app.post('/api/analyze-profile', async (req, res) => {
 
     const prompt = 'Eres ETHV. Analiza este perfil y devuelve JSON con: skills (array), experience_years (number), education (array), certifications (array), summary (string), headline (string), location (string), web3_relevance (high/medium/low). Perfil: ' + content.slice(0, 10000) + '. Responde SOLO JSON.';
 
-    return new Promise((resolve) => {
-      const body = JSON.stringify({
-        model: OPENCLAW_MODEL,
-        messages: [{ role: 'user', content: prompt }],
-        max_tokens: 2000,
-        temperature: 0.3
-      });
+    try {
+      const aiResult = await callMiniMax(prompt);
+      const raw = aiResult?.choices?.[0]?.message?.content || '';
+      const cleaned = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        return res.json({ success: true, ...JSON.parse(jsonMatch[0]) });
+      }
+      return res.json({ success: true, summary: raw.slice(0, 500) });
+    } catch (e) {
+      return res.status(500).json({ error: 'AI failed', details: e.message });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 
-      const options = {
-        hostname: OPENCLAW_HOST,
-        port: OPENCLAW_PORT,
-        path: '/v1/chat/completions',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Bearer ' + OPENCLAW_TOKEN,
-          'Content-Length': Buffer.byteLength(body)
-        }
-      };
+// ============================================
+// GENERATE QUIZ WITH AI
+// ============================================
 
-      const proxyReq = http.request(options, (proxyRes) => {
-        let data = '';
-        proxyRes.on('data', chunk => data += chunk);
-        proxyRes.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            const msgContent = parsed?.choices?.[0]?.message?.content || '';
-            const jsonMatch = msgContent.match(/\{[\s\S]*\}/);
-            if (jsonMatch) {
-              res.json({ success: true, ...JSON.parse(jsonMatch[0]) });
-            } else {
-              res.json({ success: true, summary: msgContent.slice(0, 500) });
-            }
-          } catch (e) {
-            res.json({ success: true, error: 'Parse error', raw: data });
-          }
-          resolve();
-        });
-      });
+// In-memory quiz sessions: quizId → { questions (full), expiresAt }
+const quizSessions = new Map();
+setInterval(() => {
+  const now = Date.now();
+  for (const [id, session] of quizSessions) {
+    if (session.expiresAt < now) quizSessions.delete(id);
+  }
+}, 10 * 60 * 1000);
 
-      proxyReq.on('error', (err) => { res.status(500).json({ error: 'AI failed', details: err.message }); resolve(); });
-      proxyReq.write(body);
-      proxyReq.end();
+function parseQuizJSON(raw) {
+  const cleaned = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
+
+  // Find the LAST occurrence of `[{` — the actual JSON array comes after any thinking preamble
+  let lastStart = -1;
+  const re = /\[\s*\{/g;
+  let m;
+  while ((m = re.exec(cleaned)) !== null) lastStart = m.index;
+
+  const searchFrom = lastStart !== -1 ? cleaned.slice(lastStart) : cleaned;
+
+  // Use balanced bracket matching to extract the full array
+  let depth = 0, start = -1, end = -1;
+  for (let i = 0; i < searchFrom.length; i++) {
+    if (searchFrom[i] === '[') { if (depth === 0) start = i; depth++; }
+    else if (searchFrom[i] === ']') { depth--; if (depth === 0) { end = i; break; } }
+  }
+
+  if (start !== -1 && end !== -1) {
+    try {
+      const parsed = JSON.parse(searchFrom.slice(start, end + 1));
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    } catch (e) {
+      console.log('[Quiz] Balanced parse failed:', e.message);
+    }
+  }
+  return null;
+}
+
+app.post('/api/generate-quiz', async (req, res) => {
+  try {
+    const { skill, level = 'mid', lang = 'en' } = req.body;
+    if (!skill) return res.status(400).json({ error: 'skill required' });
+
+    const langLabel = lang === 'es' ? 'Spanish' : 'English';
+    const langNote  = lang === 'es' ? 'Escribe TODO en español.' : 'Write everything in English.';
+
+    console.log('[Quiz] Generating for:', skill, level, lang);
+
+    const prompt = `You are ETHV, a talent validator. Generate a quiz with 8 questions to validate REAL proficiency in "${skill}" at ${level} level. ${langNote}
+
+Mix these types (distribute them across the 8 questions):
+- "multiple_choice": 4 options, one correct. Good for concepts and best-practices.
+- "code_trace": show a short code snippet, ask what it outputs or what is wrong. Use "multiple_choice" format with options.
+- "open": a practical/logical reasoning question. No options. The candidate writes a free-text answer.
+
+Anti-AI rules:
+- Avoid questions that can be answered by simply googling a definition.
+- Prefer "given this real situation, what would you do and why?" scenarios.
+- For code_trace, use non-trivial logic (closures, async, edge cases, type coercion, etc.).
+- Open questions must require reasoning, not just reciting facts.
+
+Respond ONLY with a valid JSON array, no markdown:
+[
+  {
+    "type": "multiple_choice",
+    "question": "...",
+    "options": ["A","B","C","D"],
+    "correct": 0,
+    "explanation": "..."
+  },
+  {
+    "type": "code_trace",
+    "question": "What does this code output?",
+    "code": "// short snippet here",
+    "options": ["A","B","C","D"],
+    "correct": 2,
+    "explanation": "..."
+  },
+  {
+    "type": "open",
+    "question": "Practical/logical question here...",
+    "model_answer": "A strong answer should mention: ...",
+    "explanation": "..."
+  }
+]`;
+
+    const aiResult = await callMiniMax(prompt, 8000, '[');
+    const raw = aiResult?.choices?.[0]?.message?.content || '';
+    console.log('[Quiz] Raw length:', raw.length);
+
+    const questions = parseQuizJSON(raw);
+    if (!questions || questions.length === 0) {
+      console.error('[Quiz] Parse failed.');
+      console.error('[Quiz] First 400:', raw.slice(0, 400));
+      console.error('[Quiz] Last 400:', raw.slice(-400));
+      return res.status(500).json({ error: 'AI did not return valid quiz format' });
+    }
+
+    const quizId = require('crypto').randomUUID();
+    quizSessions.set(quizId, {
+      skill, level, lang, questions,
+      expiresAt: Date.now() + 30 * 60 * 1000
     });
+
+    console.log('[Quiz] Generated', questions.length, 'questions |', quizId);
+
+    // Send sanitized — no correct index or model_answer
+    const sanitized = questions.map(q => ({
+      type: q.type,
+      question: q.question,
+      code: q.code || null,
+      options: q.options || null
+    }));
+
+    res.json({ quizId, skill, level, lang, questions: sanitized });
+
+  } catch (error) {
+    console.error('[Quiz] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Evaluate a single open answer with AI
+async function evaluateOpenAnswer(question, modelAnswer, userAnswer, lang) {
+  const prompt = `You are a strict technical evaluator. Evaluate this quiz answer.
+Question: "${question}"
+Expected answer covers: "${modelAnswer}"
+Candidate's answer: "${userAnswer}"
+
+Evaluate on: accuracy, completeness, practical understanding.
+Ignore grammar/spelling. A passing score is 60+.
+Respond ONLY with JSON: {"score": 75, "feedback": "one sentence feedback in ${lang === 'es' ? 'Spanish' : 'English'}"}`;
+
+  try {
+    const result = await callMiniMax(prompt, 512, '{');
+    const raw = result?.choices?.[0]?.message?.content || '';
+    const cleaned = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
+    const match = cleaned.match(/\{[\s\S]*\}/);
+    if (match) {
+      const parsed = JSON.parse(match[0]);
+      return { score: parsed.score || 0, feedback: parsed.feedback || '' };
+    }
+  } catch (e) {
+    console.error('[Quiz] Open eval error:', e.message);
+  }
+  return { score: 0, feedback: 'Could not evaluate answer' };
+}
+
+// Submit answers — backend validates (MC instantly, open questions via AI)
+app.post('/api/submit-quiz', async (req, res) => {
+  try {
+    const { quizId, answers } = req.body;
+    if (!quizId || !Array.isArray(answers)) {
+      return res.status(400).json({ error: 'quizId and answers required' });
+    }
+
+    const session = quizSessions.get(quizId);
+    if (!session) {
+      return res.status(404).json({ error: 'Quiz session not found or expired' });
+    }
+
+    const { questions, skill, level, lang } = session;
+
+    // Evaluate each question
+    const results = await Promise.all(questions.map(async (q, i) => {
+      const userAnswer = answers[i];
+
+      if (q.type === 'open') {
+        const { score, feedback } = await evaluateOpenAnswer(
+          q.question, q.model_answer, userAnswer || '', lang
+        );
+        return {
+          type: 'open',
+          question: q.question,
+          yourAnswer: userAnswer || '',
+          isCorrect: score >= 60,
+          openScore: score,
+          feedback,
+          explanation: q.explanation
+        };
+      }
+
+      // multiple_choice or code_trace
+      const isCorrect = userAnswer === q.correct;
+      return {
+        type: q.type || 'multiple_choice',
+        question: q.question,
+        code: q.code || null,
+        options: q.options,
+        yourAnswer: userAnswer ?? -1,
+        correct: q.correct,
+        isCorrect,
+        explanation: q.explanation
+      };
+    }));
+
+    const correctCount = results.filter(r => r.isCorrect).length;
+    const score = Math.round((correctCount / questions.length) * 100);
+    const passed = score >= 70;
+
+    quizSessions.delete(quizId);
+    console.log('[Quiz] Submit:', skill, '| score:', score, '| passed:', passed);
+
+    res.json({ skill, level, lang, score, passed, correctCount, total: questions.length, results });
+
   } catch (error) {
     res.status(500).json({ error: error.message });
   }

@@ -5,6 +5,7 @@ const https = require('https');
 const http = require('http');
 const crypto = require('crypto');
 const cors = require('cors');
+const rateLimit = require('express-rate-limit');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
 const { callAI, parseJSON } = require('./ai.cjs');
@@ -21,13 +22,35 @@ const BACKEND_URL  = process.env.BACKEND_URL  || 'http://localhost:3003';
 
 // In-memory OAuth session store  { token → { name, email, picture, provider } }
 const oauthSessions = new Map();
+// In-memory OAuth state store (CSRF protection) { state → timestamp }
+const oauthStates = new Map();
+// Purge OAuth states older than 10 minutes
+setInterval(() => {
+  const cutoff = Date.now() - 10 * 60 * 1000;
+  for (const [k, ts] of oauthStates) if (ts < cutoff) oauthStates.delete(k);
+}, 5 * 60 * 1000);
 
 const app = express();
 const PORT = process.env.PORT || 3003;
 
-app.use(cors());
-app.use(express.json({ limit: '50mb' }));
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:3000',
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'x-session-token'],
+}));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true }));
+
+// ── Rate limiting ────────────────────────────────────────────────────────────
+const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 20, standardHeaders: true, legacyHeaders: false });
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 10, standardHeaders: true, legacyHeaders: false });
+app.use('/api/analyze-cv', apiLimiter);
+app.use('/api/improve-cv', apiLimiter);
+app.use('/api/tailor-cv', apiLimiter);
+app.use('/api/linkedin-scrape', apiLimiter);
+app.use('/auth/google', authLimiter);
+app.use('/auth/linkedin', authLimiter);
+app.use('/auth/github', authLimiter);
 
 // ============================================
 // SWAGGER
@@ -562,7 +585,15 @@ app.post('/api/analyze-cv', async (req, res) => {
   try {
     const { file, filename } = req.body;
 
-    if (!file) return res.status(400).json({ error: 'No file provided' });
+    if (!file || !filename) return res.status(400).json({ error: 'No file provided' });
+
+    // Validate extension
+    const allowedExt = ['.pdf', '.docx', '.txt', '.md'];
+    const ext = require('path').extname(filename).toLowerCase();
+    if (!allowedExt.includes(ext)) return res.status(400).json({ error: 'Unsupported file type' });
+
+    // Validate size (base64 is ~4/3 of binary — 7MB base64 ≈ 5MB file)
+    if (file.length > 7 * 1024 * 1024) return res.status(400).json({ error: 'File too large (max 5MB)' });
 
     const fileBuffer = Buffer.from(file, 'base64');
 
@@ -645,7 +676,7 @@ Responde SOLO el JSON, sin texto adicional.`;
 
   } catch (error) {
     console.error('[CV] Error general:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Error processing CV' });
   }
 });
 
@@ -660,7 +691,7 @@ app.post('/v1/chat/completions', async (req, res) => {
     const text = await callAI(lastUser, { maxTokens: max_tokens || 2000 });
     res.json({ choices: [{ message: { role: 'assistant', content: text } }] });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -723,7 +754,7 @@ app.post('/api/linkedin-scrape', async (req, res) => {
     }
     res.json({ success: false, error: result.error });
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -745,7 +776,7 @@ app.post('/api/analyze-profile', async (req, res) => {
       return res.status(500).json({ error: 'AI failed', details: e.message });
     }
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -839,7 +870,7 @@ Respond ONLY with a valid JSON array, no markdown:
 
   } catch (error) {
     console.error('[Quiz] Error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -922,7 +953,7 @@ app.post('/api/submit-quiz', async (req, res) => {
     res.json({ skill, level, lang, score, passed, correctCount, total: questions.length, results });
 
   } catch (error) {
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1011,7 +1042,7 @@ Return ONLY a valid JSON object with EXACTLY this structure:
 
   } catch (error) {
     console.error('[CV Improve] Error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1194,7 +1225,7 @@ app.post('/api/download-cv-docx', async (req, res) => {
 
   } catch (error) {
     console.error('[CV Download] Error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1267,7 +1298,7 @@ Return ONLY a valid JSON object:
 
   } catch (error) {
     console.error('[CV Tailor] Error:', error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: 'Internal server error' });
   }
 });
 
@@ -1276,7 +1307,9 @@ Return ONLY a valid JSON object:
 // ============================================
 
 app.get('/auth/google', (req, res) => {
-  if (!GOOGLE_CLIENT_ID) return res.status(503).json({ error: 'Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env' });
+  if (!GOOGLE_CLIENT_ID) return res.status(503).json({ error: 'Google OAuth not configured' });
+  const state = crypto.randomBytes(16).toString('hex');
+  oauthStates.set(state, Date.now());
   const params = new URLSearchParams({
     client_id:     GOOGLE_CLIENT_ID,
     redirect_uri:  `${BACKEND_URL}/auth/google/callback`,
@@ -1284,13 +1317,16 @@ app.get('/auth/google', (req, res) => {
     scope:         'openid email profile',
     access_type:   'online',
     prompt:        'select_account',
+    state,
   });
   res.redirect('https://accounts.google.com/o/oauth2/v2/auth?' + params.toString());
 });
 
 app.get('/auth/google/callback', async (req, res) => {
-  const { code, error } = req.query;
+  const { code, error, state } = req.query;
   if (error || !code) return res.redirect(`${FRONTEND_URL}/?auth_error=google_denied`);
+  if (!state || !oauthStates.has(state)) return res.redirect(`${FRONTEND_URL}/?auth_error=invalid_state`);
+  oauthStates.delete(state);
 
   try {
     // Exchange code for tokens
@@ -1342,19 +1378,24 @@ app.get('/auth/google/callback', async (req, res) => {
 // ============================================
 
 app.get('/auth/linkedin', (req, res) => {
-  if (!LINKEDIN_CLIENT_ID) return res.status(503).json({ error: 'LinkedIn OAuth not configured. Set LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET in .env' });
+  if (!LINKEDIN_CLIENT_ID) return res.status(503).json({ error: 'LinkedIn OAuth not configured' });
+  const state = crypto.randomBytes(16).toString('hex');
+  oauthStates.set(state, Date.now());
   const params = new URLSearchParams({
     response_type: 'code',
     client_id:     LINKEDIN_CLIENT_ID,
     redirect_uri:  `${BACKEND_URL}/auth/linkedin/callback`,
     scope:         'openid profile email',
+    state,
   });
   res.redirect('https://www.linkedin.com/oauth/v2/authorization?' + params.toString());
 });
 
 app.get('/auth/linkedin/callback', async (req, res) => {
-  const { code, error } = req.query;
+  const { code, error, state } = req.query;
   if (error || !code) return res.redirect(`${FRONTEND_URL}/?auth_error=linkedin_denied`);
+  if (!state || !oauthStates.has(state)) return res.redirect(`${FRONTEND_URL}/?auth_error=invalid_state`);
+  oauthStates.delete(state);
 
   try {
     // Exchange code for access token
@@ -1415,18 +1456,23 @@ app.get('/auth/session', (req, res) => {
 // ============================================
 
 app.get('/auth/github', (req, res) => {
-  if (!GITHUB_CLIENT_ID) return res.status(503).json({ error: 'GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in .env' });
+  if (!GITHUB_CLIENT_ID) return res.status(503).json({ error: 'GitHub OAuth not configured' });
+  const state = crypto.randomBytes(16).toString('hex');
+  oauthStates.set(state, Date.now());
   const params = new URLSearchParams({
     client_id:    GITHUB_CLIENT_ID,
     redirect_uri: `${BACKEND_URL}/auth/github/callback`,
     scope:        'user:email',
+    state,
   });
   res.redirect('https://github.com/login/oauth/authorize?' + params.toString());
 });
 
 app.get('/auth/github/callback', async (req, res) => {
-  const { code, error } = req.query;
+  const { code, error, state } = req.query;
   if (error || !code) return res.redirect(`${FRONTEND_URL}/?auth_error=github_denied`);
+  if (!state || !oauthStates.has(state)) return res.redirect(`${FRONTEND_URL}/?auth_error=invalid_state`);
+  oauthStates.delete(state);
 
   try {
     // Exchange code for access token
@@ -1450,7 +1496,7 @@ app.get('/auth/github/callback', async (req, res) => {
     });
 
     const tokens = JSON.parse(tokenRes.body);
-    if (!tokens.access_token) throw new Error('No access_token from GitHub: ' + JSON.stringify(tokens));
+    if (!tokens.access_token) throw new Error('No access_token from GitHub');
 
     // Get user profile
     const userRes = await new Promise((resolve, reject) => {

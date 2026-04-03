@@ -3,17 +3,9 @@ import react from '@vitejs/plugin-react';
 import path from 'path';
 import {defineConfig, loadEnv} from 'vite';
 
-export default defineConfig(({mode}) => {
-  const env = loadEnv(mode, '.', '');
+export default defineConfig(() => {
   return {
     plugins: [react(), tailwindcss()],
-    define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY),
-      'process.env.VITE_SUPABASE_URL': JSON.stringify(env.VITE_SUPABASE_URL),
-      'process.env.VITE_SUPABASE_KEY': JSON.stringify(env.VITE_SUPABASE_KEY),
-      'process.env.VITE_OPENCLAW_TOKEN': JSON.stringify(env.VITE_OPENCLAW_TOKEN),
-      'process.env.VITE_EXTRACTOR_URL': JSON.stringify(env.VITE_EXTRACTOR_URL),
-    },
     resolve: {
       alias: {
         '@': path.resolve(__dirname, '.'),

@@ -1,5 +1,4 @@
 {
-  "enableAllProjectMcpServers": true,
   "permissions": {
     "allow": [
       "Bash(npm install:*)",
@@ -18,7 +17,9 @@
       "Bash(powershell -Command \"Get-Process -Id \\(Get-NetTCPConnection -LocalPort 3003 -ErrorAction SilentlyContinue\\).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force\")",
       "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 3003 -ErrorAction SilentlyContinue | Select-Object State, OwningProcess\")",
       "WebSearch",
-      "Skill(update-config)"
+      "Skill(update-config)",
+      "Bash(find /d/ETH/ETHV -type f -name *.env* -o -name .env*)"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true
 }

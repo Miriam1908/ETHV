@@ -1,7 +1,7 @@
 {
-  "name": "ethv-backend",
+  "name": "liketalent-backend",
   "version": "1.0.0",
-  "description": "ETHV API - CV analysis, LinkedIn scraping, OpenClaw proxy",
+  "description": "LikeTalent API - CV analysis, LinkedIn scraping, AI talent validation",
   "main": "index.cjs",
   "scripts": {
     "start": "node index.cjs",
@@ -16,6 +16,7 @@
     "multer": "^2.1.1",
     "pdf-parse": "^2.4.5",
     "pdfjs-dist": "^5.5.207",
+    "docx": "^9.5.0",
     "swagger-jsdoc": "^6.2.8",
     "swagger-ui-express": "^5.0.1",
     "tesseract.js": "^7.0.0"

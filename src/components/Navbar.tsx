@@ -1,6 +1,7 @@
 import { Link, useNavigate } from 'react-router-dom';
 import { useWallet } from '../hooks/useWallet';
 import { useAuth } from '../store/AuthContext';
+import { useLang } from '../store/LangContext';
 import { LogOut, LayoutDashboard, FileUp, CheckCircle, Briefcase, Menu, X, Globe } from 'lucide-react';
 import { useState } from 'react';
 import { cn } from '../utils/cn';
@@ -8,6 +9,7 @@ import { cn } from '../utils/cn';
 export default function Navbar() {
   const { address, isConnected, logout } = useWallet()
   const { isAuthenticated } = useAuth();
+  const { lang, setLang } = useLang();
   const navigate = useNavigate();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
 
@@ -30,8 +32,8 @@ export default function Navbar() {
         <div className="flex items-center justify-between h-16">
           <div className="flex items-center">
             <Link to="/" className="flex-shrink-0 flex items-center gap-2">
-              <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center font-bold text-black">E</div>
-              <span className="text-white font-bold text-xl tracking-tight">ETHV</span>
+              <div className="w-8 h-8 bg-emerald-500 rounded-lg flex items-center justify-center font-bold text-black">L</div>
+              <span className="text-white font-bold text-xl tracking-tight">LikeTalent</span>
             </Link>
             <div className="hidden md:block ml-10">
               <div className="flex items-baseline space-x-4">
@@ -51,7 +53,19 @@ export default function Navbar() {
             </div>
           </div>
           <div className="hidden md:block">
-            <div className="ml-4 flex items-center md:ml-6 gap-4">
+            <div className="ml-4 flex items-center md:ml-6 gap-3">
+              {/* Language selector */}
+              <div className="flex items-center gap-1 bg-zinc-900 border border-zinc-800 rounded-lg px-2 py-1">
+                <Globe size={13} className="text-zinc-500" />
+                <select
+                  value={lang}
+                  onChange={e => setLang(e.target.value as 'es' | 'en')}
+                  className="bg-transparent text-zinc-300 text-xs outline-none cursor-pointer"
+                >
+                  <option value="es">ES</option>
+                  <option value="en">EN</option>
+                </select>
+              </div>
               {isConnected && address ? (
                 <div className="flex items-center gap-4">
                   <div className="bg-zinc-900 border border-zinc-800 px-3 py-1.5 rounded-full text-zinc-300 text-xs font-mono">

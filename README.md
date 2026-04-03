@@ -1,104 +1,194 @@
-# ETHV — Talent Validation (Front-end)
+# LikeTalent — Centro de Talento y Habilidades
 
-Proyecto front-end construido con Vite + React + TypeScript para la aplicación "ETHV Talent Validation".
+Una plataforma de validación de talento y habilidades — subes tu CV, la IA lo analiza, extrae skills, genera un CV optimizado para ATS, y valida tus habilidades en blockchain.
 
-Esta documentación rápida explica cómo preparar el entorno, ejecutar la aplicación en desarrollo y construir artefactos para producción. Está escrita en español y orientada a desarrolladores trabajando en Windows (PowerShell).
+## Stack
 
-## Tecnologías
+**Frontend**
+- Vite + React 19 + TypeScript
+- TailwindCSS + Framer Motion
+- wagmi + Web3Modal (wallet connect)
+- React Router v6
 
-- Vite
-- React 19 + TypeScript
-- TailwindCSS
-- wagmi + web3modal (integración Web3)
-- viem, wagmi y librerías relacionadas para interacción con cadenas
+**Backend** (`backend/`)
+- Node.js + Express (CommonJS `.cjs`)
+- MiniMax-M2.5 vía API compatible con Anthropic (`api.minimax.io`)
+- Supabase (PostgreSQL) para persistencia
+- OAuth 2.0: Google, LinkedIn, GitHub
+- pdfjs-dist (legacy build) para extracción de texto PDF
 
-## Requisitos
+## Arquitectura
 
-- Node.js (v18+ recomendado)
-- npm o un gestor de paquetes compatible
+```
+localhost:3000  →  Vite dev server (React)
+localhost:3003  →  Express backend
+```
+
+Vite proxea `/api`, `/v1`, `/auth` → puerto 3003.
+
+## Funcionalidades
+
+| Feature | Estado |
+|---|---|
+| Subida y análisis de CV (PDF, DOCX, TXT, MD) | ✅ |
+| Extracción de skills, experiencia, educación | ✅ |
+| Score ATS + dimensiones (claridad, impacto, etc.) | ✅ |
+| Generación de CV optimizado para ATS | ✅ |
+| Adaptar CV a oferta de trabajo | ✅ |
+| Análisis de perfil LinkedIn | ✅ |
+| Autenticación: Wallet (wagmi), Google, LinkedIn, GitHub | ✅ |
+| Persistencia en Supabase | ✅ |
+| Selector de idioma global (ES / EN) | ✅ |
+
+## Estructura
+
+```
+/
+├── src/                        # Frontend React
+│   ├── App.tsx                 # Providers: Wagmi, Auth, Lang, Router
+│   ├── store/
+│   │   ├── AuthContext.tsx     # Token auth (localStorage)
+│   │   └── LangContext.tsx     # Idioma global ES/EN
+│   ├── pages/
+│   │   ├── Landing.tsx         # Hero + OAuth + wallet + CTA "Sube tu CV"
+│   │   ├── CVUpload.tsx        # Upload + análisis IA + CV ATS
+│   │   ├── Dashboard.tsx       # Stats y accesos rápidos
+│   │   ├── Validation.tsx      # Quiz de skills + badges on-chain
+│   │   ├── Opportunities.tsx   # Job board con match scores
+│   │   └── AuthCallback.tsx    # Callback OAuth → token → redirect
+│   ├── components/
+│   │   ├── Navbar.tsx          # Logo LikeTalent + nav + selector idioma
+│   │   ├── CVPreview.tsx       # Previsualización CV ATS generado
+│   │   └── ProtectedRoute.tsx  # Guarda rutas (wallet o VITE_WALLET_BYPASS)
+│   ├── hooks/useWallet.ts
+│   ├── services/apiClient.ts
+│   └── web3/config.ts
+│
+├── backend/                    # Backend Express
+│   ├── index.cjs               # Servidor principal (puerto 3003)
+│   ├── ai.cjs                  # callAI() + parseJSON() (state machine)
+│   ├── package.json
+│   ├── .env                    # Variables locales (no commitear)
+│   ├── .env.example            # Template de variables
+│   └── supabase-schema.sql     # DDL tablas Supabase
+│
+├── .mcp.json                   # MCP Supabase (local, en .gitignore)
+└── CLAUDE.md                   # Instrucciones para Claude Code
+```
+
+## Base de datos (Supabase)
+
+Ejecutar `backend/supabase-schema.sql` en Supabase Dashboard → SQL Editor.
+
+Tablas:
+- `cv_analyses` — cada análisis de CV con scores, skills, datos de contacto
+- `auth_sessions` — logins OAuth (Google, LinkedIn, GitHub, wallet)
+- `cv_improvements` — CVs ATS generados/mejorados
 
 ## Variables de entorno
 
-El proyecto usa variables de entorno desde `.env.local` en la raíz. Valores importantes que debes configurar:
+### Frontend (`.env` en raíz)
 
-- `GEMINI_API_KEY` — (aparece en el README previo) clave para integraciones relacionadas.
-- `VITE_WALLETCONNECT_PROJECT_ID` — usado por WalletConnect / web3modal (ver `src/web3/config.ts`).
-
-Si algún archivo .env no existe, crea `.env.local` (no comitees este archivo) y añade las claves necesarias:
-
-```powershell
-# ejemplo .env.local
-GEMINI_API_KEY=tu_gemini_api_key
-VITE_WALLETCONNECT_PROJECT_ID=tu_project_id
+```env
+VITE_WALLETCONNECT_PROJECT_ID=...
+VITE_BACKEND_URL=http://localhost:3003
+VITE_WALLET_BYPASS=true          # Omite auth de wallet en desarrollo
 ```
 
-Nota: las variables de entorno con prefijo VITE_* estarán disponibles en tiempo de ejecución del cliente.
+### Backend (`backend/.env`)
 
-## Instalación (Windows PowerShell)
+Ver `backend/.env.example` para la lista completa. Principales:
 
-1. Clona el repositorio y abre la carpeta del proyecto.
-2. Instala dependencias:
+```env
+PORT=3003
 
-```powershell
+# IA (intercambiable sin tocar código)
+AI_PROVIDER=anthropic
+AI_BASE_URL=https://api.minimax.io/anthropic
+AI_API_KEY=...
+AI_MODEL=MiniMax-M2.5
+
+# Supabase
+SUPABASE_URL=https://<project>.supabase.co
+SUPABASE_KEY=<service_role_key>
+
+# OAuth
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
+LINKEDIN_CLIENT_ID=...
+LINKEDIN_CLIENT_SECRET=...
+GITHUB_CLIENT_ID=...
+GITHUB_CLIENT_SECRET=...
+
+FRONTEND_URL=http://localhost:3000
+BACKEND_URL=http://localhost:3003
+```
+
+## Comandos
+
+```bash
+# Desarrollo
+npm run dev          # Frontend (puerto 3000)
+npm run server       # Backend  (puerto 3003)
+npm run dev:all      # Ambos simultáneamente
+
+# Producción
+npm run build
+npm run preview
+
+# Utilidades
+npm run lint         # TypeScript check (tsc --noEmit)
+npm run clean        # Elimina /dist
+```
+
+Backend (separado):
+```bash
+cd backend
 npm install
-```
-
-3. Crea `.env.local` con las variables necesarias (ver sección anterior).
-
-## Scripts útiles
-
-Los scripts definidos en `package.json`:
-
-- `npm run dev` — inicia el servidor de desarrollo (Vite). Por defecto en este proyecto se expone en el puerto 3000.
-- `npm run build` — genera la build de producción en la carpeta `dist`.
-- `npm run preview` — vista previa de la build localmente.
-- `npm run clean` — elimina la carpeta `dist` (script definido como `rm -rf dist`).
-- `npm run lint` — ejecuta TypeScript check (`tsc --noEmit`).
-
-Ejemplo para ejecutar en PowerShell:
-
-```powershell
 npm run dev
 ```
 
-Si usas Windows y `rm -rf dist` no funciona en algún entorno (PowerShell clásico), puedes eliminar `dist` con:
+## Endpoints principales
 
-```powershell
-Remove-Item -Recurse -Force .\dist
+| Método | Endpoint | Descripción |
+|---|---|---|
+| POST | `/api/analyze-cv` | Analiza CV (base64) con IA |
+| POST | `/api/improve-cv` | Genera CV ATS optimizado |
+| POST | `/api/tailor-cv` | Adapta CV a oferta de trabajo |
+| POST | `/api/linkedin-scrape` | Analiza perfil LinkedIn |
+| GET | `/api/supabase-status` | Diagnóstico conexión Supabase |
+| GET | `/auth/google` | Inicia OAuth Google |
+| GET | `/auth/linkedin` | Inicia OAuth LinkedIn |
+| GET | `/auth/github` | Inicia OAuth GitHub |
+| GET | `/health` | Healthcheck |
+| GET | `/api-docs` | Swagger UI |
+
+## Proveedor de IA
+
+El backend soporta cualquier proveedor compatible con la API de Anthropic o OpenAI. Cambia estas 4 líneas en `backend/.env` sin tocar código:
+
+```env
+# Claude (Anthropic)
+AI_PROVIDER=anthropic
+AI_BASE_URL=https://api.anthropic.com
+AI_API_KEY=sk-ant-...
+AI_MODEL=claude-sonnet-4-6
+
+# GPT-4o
+AI_PROVIDER=openai
+AI_BASE_URL=https://api.openai.com
+AI_API_KEY=sk-...
+AI_MODEL=gpt-4o
+
+# DeepSeek
+AI_PROVIDER=openai
+AI_BASE_URL=https://api.deepseek.com
+AI_API_KEY=sk-...
+AI_MODEL=deepseek-chat
 ```
-
-## Estructura principal del proyecto
-
-Raíz del proyecto (resumen):
-
-- `index.html` — entrada HTML de Vite
-- `package.json` — scripts y dependencias
-- `tsconfig.json`, `vite.config.ts` — configuración de TypeScript y Vite
-- `src/` — código fuente
-  - `main.tsx`, `App.tsx` — arranque de la app
-  - `components/` — componentes reutilizables (por ejemplo `Navbar.tsx`, `ProtectedRoute.tsx`)
-  - `pages/` — pantallas (Dashboard, Landing, CVUpload, Opportunities, Validation)
-  - `layouts/` — layouts (ej. `MainLayout.tsx`)
-  - `hooks/` — hooks personalizados (`useWallet.ts`)
-  - `services/` — cliente API (`apiClient.ts`)
-  - `store/` — contexto y gestión de estado (`AuthContext.tsx`)
-  - `web3/` — configuración Web3 y utils (`config.ts`)
-  - `types/` y `utils/` — tipos y utilitarios
-
-## Notas sobre Web3
-
-La configuración de la conexión Web3 se encuentra en `src/web3/config.ts`. Asegúrate de configurar `VITE_WALLETCONNECT_PROJECT_ID` en `.env.local` para que WalletConnect funcione correctamente.
 
 ## Contribuir
 
-1. Crea una rama con tu feature o fix: `git checkout -b feature/mi-cambio`
-2. Haz commits pequeños y descriptivos.
-3. Abre un pull request hacia `master` cuando tu cambio esté listo.
-
-## Licencia y contacto
-
-Incluye aquí la información de licencia (si aplica) y cómo contactarte o al equipo del proyecto.
-
----
-
-Si quieres, puedo añadir secciones adicionales (por ejemplo: guías de tests, reglas de lint o un checklist de despliegue). ¿Deseas que lo haga ahora? 
+1. `git checkout -b feature/mi-cambio`
+2. Commits pequeños y descriptivos
+3. Pull request hacia `master`

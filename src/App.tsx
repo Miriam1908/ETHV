@@ -10,6 +10,7 @@ import { createWeb3Modal } from '@web3modal/wagmi/react';
 
 import { config, projectId } from './web3/config';
 import { AuthProvider } from './store/AuthContext';
+import { LangProvider } from './store/LangContext';
 import MainLayout from './layouts/MainLayout';
 import ProtectedRoute from './components/ProtectedRoute';
 
@@ -19,6 +20,7 @@ import CVUpload from './pages/CVUpload';
 import Validation from './pages/Validation';
 import Opportunities from './pages/Opportunities';
 import LinkedInAnalyzer from './pages/LinkedInAnalyzer';
+import AuthCallback from './pages/AuthCallback';
 
 // Create modal
 createWeb3Modal({
@@ -39,10 +41,12 @@ export default function App() {
     <WagmiProvider config={config}>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
+          <LangProvider>
           <Router>
             <MainLayout>
               <Routes>
                 <Route path="/" element={<Landing />} />
+                <Route path="/auth/callback" element={<AuthCallback />} />
                 <Route path="/linkedin" element={<LinkedInAnalyzer />} />
                 
                 {/* Protected Routes */}
@@ -55,6 +59,7 @@ export default function App() {
               </Routes>
             </MainLayout>
           </Router>
+          </LangProvider>
         </AuthProvider>
       </QueryClientProvider>
     </WagmiProvider>

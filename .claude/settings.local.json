@@ -1,11 +1,24 @@
 {
+  "enableAllProjectMcpServers": true,
   "permissions": {
     "allow": [
       "Bash(npm install:*)",
       "Bash(node -e \"require\\(''''./server.js''''\\)\")",
       "Bash(node -e \"const s = require\\(''swagger-jsdoc''\\); const u = require\\(''swagger-ui-express''\\); console.log\\(''OK''\\)\")",
       "Bash(node -e \":*)",
-      "Bash(npm list:*)"
+      "Bash(npm list:*)",
+      "Bash(node:*)",
+      "Bash(npx tsc:*)",
+      "Bash(taskkill /PID 28416 /F)",
+      "Bash(netstat -ano)",
+      "Bash(cmd /c \"taskkill /F /PID 28416\" 2>&1)",
+      "Bash(powershell -Command 'Stop-Process -Id 28416 -Force')",
+      "Bash(curl -s http://localhost:3003/health)",
+      "Bash(curl -s http://localhost:3003/api/supabase-status)",
+      "Bash(powershell -Command \"Get-Process -Id \\(Get-NetTCPConnection -LocalPort 3003 -ErrorAction SilentlyContinue\\).OwningProcess -ErrorAction SilentlyContinue | Stop-Process -Force\")",
+      "Bash(powershell -Command \"Get-NetTCPConnection -LocalPort 3003 -ErrorAction SilentlyContinue | Select-Object State, OwningProcess\")",
+      "WebSearch",
+      "Skill(update-config)"
     ]
   }
 }

@@ -1,11 +1,26 @@
-// ETHV Backend Server
+// LikeTalent Backend Server
 require('dotenv').config();
 const express = require('express');
 const https = require('https');
 const http = require('http');
+const crypto = require('crypto');
 const cors = require('cors');
 const swaggerUi = require('swagger-ui-express');
 const swaggerJsdoc = require('swagger-jsdoc');
+const { callAI, parseJSON } = require('./ai.cjs');
+
+// ── OAuth config ─────────────────────────────────────────────────────────────
+const GOOGLE_CLIENT_ID     = process.env.GOOGLE_CLIENT_ID     || '';
+const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
+const LINKEDIN_CLIENT_ID     = process.env.LINKEDIN_CLIENT_ID     || '';
+const LINKEDIN_CLIENT_SECRET = process.env.LINKEDIN_CLIENT_SECRET || '';
+const GITHUB_CLIENT_ID     = process.env.GITHUB_CLIENT_ID     || '';
+const GITHUB_CLIENT_SECRET = process.env.GITHUB_CLIENT_SECRET || '';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:3000';
+const BACKEND_URL  = process.env.BACKEND_URL  || 'http://localhost:3003';
+
+// In-memory OAuth session store  { token → { name, email, picture, provider } }
+const oauthSessions = new Map();
 
 const app = express();
 const PORT = process.env.PORT || 3003;
@@ -21,12 +36,12 @@ const swaggerSpec = swaggerJsdoc({
   definition: {
     openapi: '3.0.0',
     info: {
-      title: 'ETHV API',
+      title: 'LikeTalent API',
       version: '1.0.0',
       description: 'API de análisis de talento Web3 — CV, LinkedIn y certificación on-chain.',
     },
     servers: [
-      { url: 'https://ethv.onrender.com', description: 'Producción' },
+      { url: 'https://liketalent.onrender.com', description: 'Producción' },
       { url: 'http://localhost:3003', description: 'Local' },
     ],
   },
@@ -161,14 +176,11 @@ swaggerSpec.paths = {
 };
 
 app.use('/swagger', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
-  customSiteTitle: 'ETHV API Docs',
+  customSiteTitle: 'LikeTalent API Docs',
   customCss: '.swagger-ui .topbar { background-color: #0f172a; }',
 }));
 app.get('/swagger.json', (req, res) => res.json(swaggerSpec));
 
-const MINIMAX_API_KEY = process.env.MINIMAX_API_KEY || '';
-const MINIMAX_BASE_URL = process.env.MINIMAX_BASE_URL || 'https://api.minimax.io/anthropic';
-const MINIMAX_MODEL = process.env.MINIMAX_MODEL || 'MiniMax-M2.5';
 const JINA_URL = process.env.JINA_URL || 'https://r.jina.ai/';
 
 const SUPABASE_URL = process.env.SUPABASE_URL;
@@ -184,7 +196,7 @@ app.get('/health', (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', service: 'ethv-backend' });
+  res.json({ status: 'ok', service: 'liketalent-backend' });
 });
 
 // ============================================
@@ -350,63 +362,87 @@ function estimateLevel(data) {
 }
 
 // ============================================
-// SUPABASE
+// SUPABASE — helpers
 // ============================================
 
-async function saveToSupabase(data) {
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
-    console.log('[Supabase] Not configured, skipping save');
+function sbHeaders() {
+  return {
+    'Content-Type': 'application/json',
+    'apikey': SUPABASE_KEY,
+    'Authorization': `Bearer ${SUPABASE_KEY}`,
+    'Prefer': 'return=minimal',
+  };
+}
+
+async function sbInsert(table, payload) {
+  if (!SUPABASE_URL || !SUPABASE_KEY || SUPABASE_KEY === 'your_supabase_key_here') {
     return { success: false, reason: 'not configured' };
   }
-
-  const payload = {
-    email: data.email || null,
-    name: data.name || null,
-    phone: data.phone || null,
-    location: data.location || null,
-    linkedin: data.linkedin || null,
-    github: data.github || null,
-    portfolio: data.portfolio || null,
-    current_position: data.current_position || null,
-    company: data.company || null,
-    experience_years: data.experience_years || 0,
-    overall_score: data.score || 0,
-    ats_score: data.ats_score || 0,
-    estimated_level: data.level || null,
-    summary: data.summary || null,
-    web3_relevance: data.web3_relevance || 'low',
-    skills: data.skills ? JSON.stringify(data.skills) : null,
-    certifications: data.certifications ? JSON.stringify(data.certifications) : null,
-    education: data.education ? JSON.stringify(data.education) : null,
-    languages: data.languages ? JSON.stringify(data.languages) : null,
-    raw_response: JSON.stringify(data),
-    created_at: new Date().toISOString()
-  };
-
   try {
-    const response = await fetch(`${SUPABASE_URL}/rest/v1/cv_analyses`, {
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}`, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'apikey': SUPABASE_KEY,
-        'Authorization': `Bearer ${SUPABASE_KEY}`,
-        'Prefer': 'return=minimal'
-      },
-      body: JSON.stringify(payload)
+      headers: sbHeaders(),
+      body: JSON.stringify(payload),
     });
-
-    if (!response.ok) {
-      const error = await response.text();
-      console.error('[Supabase] Error:', error);
-      return { success: false, error };
+    if (!res.ok) {
+      const err = await res.text();
+      console.error(`[Supabase] ${table} error:`, err);
+      return { success: false, error: err };
     }
-
-    console.log('[Supabase] CV guardado OK');
+    console.log(`[Supabase] ${table} guardado OK`);
     return { success: true };
   } catch (err) {
-    console.error('[Supabase] Exception:', err.message);
+    console.error(`[Supabase] ${table} exception:`, err.message);
     return { success: false, error: err.message };
   }
+}
+
+// Guardar análisis de CV
+async function saveToSupabase(data) {
+  return sbInsert('cv_analyses', {
+    name:             data.name             || null,
+    email:            data.email            || null,
+    phone:            data.phone            || null,
+    location:         data.location         || null,
+    linkedin:         data.linkedin         || null,
+    github:           data.github           || null,
+    portfolio:        data.portfolio        || null,
+    current_position: data.current_position || null,
+    company:          data.company          || null,
+    experience_years: data.experience_years || 0,
+    overall_score:    data.score            || 0,
+    ats_score:        data.ats_score        || 0,
+    estimated_level:  data.level            || null,
+    summary:          data.summary          || null,
+    web3_relevance:   data.web3_relevance   || 'low',
+    skills:           data.skills           || null,
+    certifications:   data.certifications   || null,
+    education:        data.education        || null,
+    languages:        data.languages        || null,
+    raw_response:     data,
+  });
+}
+
+// Guardar sesión OAuth
+async function saveAuthSession({ provider, email, name, picture, identifier }) {
+  return sbInsert('auth_sessions', { provider, email: email || null, name: name || null, picture: picture || null, identifier: identifier || null });
+}
+
+// Guardar mejora/generación de CV
+async function saveCVImprovement({ mode, candidateName, result, jobDescription }) {
+  return sbInsert('cv_improvements', {
+    mode,
+    candidate_name:       candidateName || null,
+    ats_score:            result.ats_score   || result.match_score || 0,
+    match_score:          result.match_score || null,
+    job_description:      jobDescription    || null,
+    professional_summary: result.professional_summary || null,
+    contact:              result.contact    || null,
+    experience:           result.experience || null,
+    skills:               result.skills     || null,
+    education:            result.education  || null,
+    tips:                 result.tips       || null,
+  });
 }
 
 // ============================================
@@ -435,17 +471,29 @@ async function extractTextFromFile(fileBuffer, filename) {
     }
   }
 
-  // PDF: extraer texto con pdf-parse
+  // PDF: extraer texto con pdfjs-dist
   if (ext === 'pdf') {
     try {
-      const pdfParse = require('pdf-parse');
-      const result = await pdfParse(fileBuffer);
-      if (result.text && result.text.trim().length > 20) {
-        console.log('[OCR] pdf-parse extrajo', result.text.length, 'chars');
-        return result.text;
+      const path = require('path');
+      const { pathToFileURL } = require('url');
+      const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      const workerSrc = pathToFileURL(path.resolve(__dirname, 'node_modules', 'pdfjs-dist', 'legacy', 'build', 'pdf.worker.mjs')).href;
+      GlobalWorkerOptions.workerSrc = workerSrc;
+
+      const data = new Uint8Array(fileBuffer);
+      const pdf = await getDocument({ data, useSystemFonts: true, disableFontFace: true }).promise;
+      let text = '';
+      for (let i = 1; i <= pdf.numPages; i++) {
+        const page = await pdf.getPage(i);
+        const tc = await page.getTextContent();
+        text += tc.items.map(item => item.str).join(' ') + '\n';
+      }
+      if (text.trim().length > 20) {
+        console.log('[OCR] pdfjs-dist extrajo', text.length, 'chars,', pdf.numPages, 'páginas');
+        return text;
       }
     } catch (e) {
-      console.log('[OCR] pdf-parse falló:', e.message);
+      console.log('[OCR] pdfjs-dist falló:', e.message);
     }
 
     console.log('[OCR] No se pudo extraer texto del PDF');
@@ -465,66 +513,6 @@ async function extractTextFromFile(fileBuffer, filename) {
     console.log('[OCR] Tesseract falló:', e.message);
     return '';
   }
-}
-
-// ============================================
-// ANÁLISIS CON MINIMAX (Anthropic Messages API)
-// ============================================
-
-function callMiniMax(prompt, maxTokens = 4096, prefillAssistant = null) {
-
-  console.log('[MiniMax] Prompt length:', prompt.length);
-  console.log('[MiniMax] prompt:', prompt);
-
-  return new Promise((resolve, reject) => {
-    const messages = [{ role: 'user', content: prompt }];
-    // Prefill forces model to continue from this string — skips thinking preamble
-    if (prefillAssistant) {
-      messages.push({ role: 'assistant', content: prefillAssistant });
-    }
-    const payload = { model: MINIMAX_MODEL, max_tokens: maxTokens, messages };
-    const body = JSON.stringify(payload);
-
-    const url = new URL(MINIMAX_BASE_URL + '/v1/messages');
-
-    const options = {
-      hostname: url.hostname,
-      path: url.pathname,
-      method: 'POST',
-      headers: {
-        'x-api-key': MINIMAX_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'Content-Length': Buffer.byteLength(body)
-      }
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        console.log('[MiniMax] HTTP status:', res.statusCode);
-        console.log('[MiniMax] Raw response:', data.slice(0, 500));
-        try {
-          const parsed = JSON.parse(data);
-          const textBlock = (parsed?.content || []).find(c => c.type === 'text');
-          let text = textBlock?.text || '';
-          // If we used prefill, prepend it back since model continues from there
-          if (prefillAssistant && !text.trimStart().startsWith(prefillAssistant)) {
-            text = prefillAssistant + text;
-          }
-          console.log('[MiniMax] Text length:', text.length, '| preview:', text.slice(0, 80));
-          resolve({ choices: [{ message: { content: text } }] });
-        } catch (e) {
-          reject(new Error('MiniMax parse error: ' + e.message + ' | raw: ' + data.slice(0, 300)));
-        }
-      });
-    });
-
-    req.on('error', reject);
-    req.write(body);
-    req.end();
-  });
 }
 
 // ============================================
@@ -584,7 +572,7 @@ app.post('/api/analyze-cv', async (req, res) => {
     console.log('[CV] Texto extraído:', extractedText.length, 'chars');
 
     // 2. Construir prompt y llamar a OpenClaw
-    const prompt = `Eres ETHV, agente de validación de talento Web3. Analiza este CV y extrae SOLO un JSON con estos campos exactos:
+    const prompt = `Eres LikeTalent, agente de validación de talento Web3. Analiza este CV y extrae SOLO un JSON con estos campos exactos:
 {
   "name": "",
   "email": "",
@@ -612,19 +600,17 @@ Responde SOLO el JSON, sin texto adicional.`;
     let cvData = { skills: [], experience_years: 0, web3_relevance: 'low' };
 
     try {
-      console.log('[CV] Enviando a MiniMax...');
-      const aiResult = await callMiniMax(prompt);
-      const raw = aiResult?.choices?.[0]?.message?.content || '';
-      const cleaned = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        cvData = JSON.parse(jsonMatch[0]);
-        console.log('[CV] JSON extraído correctamente, skills:', cvData.skills?.length);
+      console.log('[CV] Sending to AI...');
+      const raw = await callAI(prompt, { maxTokens: 2048, prefill: '{' });
+      const parsed = parseJSON(raw);
+      if (parsed) {
+        cvData = parsed;
+        console.log('[CV] JSON extracted, skills:', cvData.skills?.length);
       } else {
         console.log('[CV] No JSON found. Preview:', raw.slice(0, 200));
       }
     } catch (e) {
-      console.error('[CV] MiniMax error:', e.message);
+      console.error('[CV] AI error:', e.message);
     }
 
     // Fallback regex: rellenar campos de contacto que la IA no extrajo
@@ -670,44 +656,9 @@ Responde SOLO el JSON, sin texto adicional.`;
 app.post('/v1/chat/completions', async (req, res) => {
   try {
     const { messages, max_tokens } = req.body;
-    const body = JSON.stringify({
-      model: MINIMAX_MODEL,
-      max_tokens: max_tokens || 2000,
-      messages
-    });
-
-    const url = new URL(MINIMAX_BASE_URL + '/v1/messages');
-    const options = {
-      hostname: url.hostname,
-      path: url.pathname,
-      method: 'POST',
-      headers: {
-        'x-api-key': MINIMAX_API_KEY,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        'Content-Length': Buffer.byteLength(body)
-      }
-    };
-
-    const proxyReq = https.request(options, (proxyRes) => {
-      let data = '';
-      proxyRes.on('data', chunk => data += chunk);
-      proxyRes.on('end', () => {
-        try {
-          const parsed = JSON.parse(data);
-          // Devolver en formato OpenAI para compatibilidad con el frontend
-          const text = parsed?.content?.[0]?.text || '';
-          res.json({ choices: [{ message: { role: 'assistant', content: text } }] });
-        } catch { res.send(data); }
-      });
-    });
-
-    proxyReq.on('error', (err) => {
-      res.status(500).json({ error: 'Failed to call MiniMax', details: err.message });
-    });
-
-    proxyReq.write(body);
-    proxyReq.end();
+    const lastUser = messages?.findLast?.(m => m.role === 'user')?.content || '';
+    const text = await callAI(lastUser, { maxTokens: max_tokens || 2000 });
+    res.json({ choices: [{ message: { role: 'assistant', content: text } }] });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -783,16 +734,12 @@ app.post('/api/analyze-profile', async (req, res) => {
       return res.status(400).json({ error: 'Profile content too short' });
     }
 
-    const prompt = 'Eres ETHV. Analiza este perfil y devuelve JSON con: skills (array), experience_years (number), education (array), certifications (array), summary (string), headline (string), location (string), web3_relevance (high/medium/low). Perfil: ' + content.slice(0, 10000) + '. Responde SOLO JSON.';
+    const prompt = 'Eres LikeTalent. Analiza este perfil y devuelve JSON con: skills (array), experience_years (number), education (array), certifications (array), summary (string), headline (string), location (string), web3_relevance (high/medium/low). Perfil: ' + content.slice(0, 10000) + '. Responde SOLO JSON.';
 
     try {
-      const aiResult = await callMiniMax(prompt);
-      const raw = aiResult?.choices?.[0]?.message?.content || '';
-      const cleaned = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
-      const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
-      if (jsonMatch) {
-        return res.json({ success: true, ...JSON.parse(jsonMatch[0]) });
-      }
+      const raw = await callAI(prompt, { maxTokens: 2048, prefill: '{' });
+      const parsed = parseJSON(raw);
+      if (parsed) return res.json({ success: true, ...parsed });
       return res.json({ success: true, summary: raw.slice(0, 500) });
     } catch (e) {
       return res.status(500).json({ error: 'AI failed', details: e.message });
@@ -815,35 +762,6 @@ setInterval(() => {
   }
 }, 10 * 60 * 1000);
 
-function parseQuizJSON(raw) {
-  const cleaned = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '');
-
-  // Find the LAST occurrence of `[{` — the actual JSON array comes after any thinking preamble
-  let lastStart = -1;
-  const re = /\[\s*\{/g;
-  let m;
-  while ((m = re.exec(cleaned)) !== null) lastStart = m.index;
-
-  const searchFrom = lastStart !== -1 ? cleaned.slice(lastStart) : cleaned;
-
-  // Use balanced bracket matching to extract the full array
-  let depth = 0, start = -1, end = -1;
-  for (let i = 0; i < searchFrom.length; i++) {
-    if (searchFrom[i] === '[') { if (depth === 0) start = i; depth++; }
-    else if (searchFrom[i] === ']') { depth--; if (depth === 0) { end = i; break; } }
-  }
-
-  if (start !== -1 && end !== -1) {
-    try {
-      const parsed = JSON.parse(searchFrom.slice(start, end + 1));
-      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
-    } catch (e) {
-      console.log('[Quiz] Balanced parse failed:', e.message);
-    }
-  }
-  return null;
-}
-
 app.post('/api/generate-quiz', async (req, res) => {
   try {
     const { skill, level = 'mid', lang = 'en' } = req.body;
@@ -854,7 +772,7 @@ app.post('/api/generate-quiz', async (req, res) => {
 
     console.log('[Quiz] Generating for:', skill, level, lang);
 
-    const prompt = `You are ETHV, a talent validator. Generate a quiz with 8 questions to validate REAL proficiency in "${skill}" at ${level} level. ${langNote}
+    const prompt = `You are LikeTalent, a talent validator. Generate a quiz with 8 questions to validate REAL proficiency in "${skill}" at ${level} level. ${langNote}
 
 Mix these types (distribute them across the 8 questions):
 - "multiple_choice": 4 options, one correct. Good for concepts and best-practices.
@@ -892,15 +810,12 @@ Respond ONLY with a valid JSON array, no markdown:
   }
 ]`;
 
-    const aiResult = await callMiniMax(prompt, 8000, '[');
-    const raw = aiResult?.choices?.[0]?.message?.content || '';
-    console.log('[Quiz] Raw length:', raw.length);
+    const raw = await callAI(prompt, { maxTokens: 8000, prefill: '[' });
+    console.log('[Quiz] Raw length:', raw.length, '| preview:', raw.slice(0, 80));
 
-    const questions = parseQuizJSON(raw);
-    if (!questions || questions.length === 0) {
-      console.error('[Quiz] Parse failed.');
-      console.error('[Quiz] First 400:', raw.slice(0, 400));
-      console.error('[Quiz] Last 400:', raw.slice(-400));
+    const questions = parseJSON(raw);
+    if (!Array.isArray(questions) || questions.length === 0) {
+      console.error('[Quiz] Parse failed. Last 300:', raw.slice(-300));
       return res.status(500).json({ error: 'AI did not return valid quiz format' });
     }
 
@@ -940,14 +855,9 @@ Ignore grammar/spelling. A passing score is 60+.
 Respond ONLY with JSON: {"score": 75, "feedback": "one sentence feedback in ${lang === 'es' ? 'Spanish' : 'English'}"}`;
 
   try {
-    const result = await callMiniMax(prompt, 512, '{');
-    const raw = result?.choices?.[0]?.message?.content || '';
-    const cleaned = raw.replace(/```(?:json)?\s*/gi, '').replace(/```/g, '').trim();
-    const match = cleaned.match(/\{[\s\S]*\}/);
-    if (match) {
-      const parsed = JSON.parse(match[0]);
-      return { score: parsed.score || 0, feedback: parsed.feedback || '' };
-    }
+    const raw = await callAI(prompt, { maxTokens: 512, prefill: '{' });
+    const parsed = parseJSON(raw);
+    if (parsed) return { score: parsed.score || 0, feedback: parsed.feedback || '' };
   } catch (e) {
     console.error('[Quiz] Open eval error:', e.message);
   }
@@ -1016,8 +926,617 @@ app.post('/api/submit-quiz', async (req, res) => {
   }
 });
 
+// ============================================
+// CV IMPROVEMENT WITH AI
+// ============================================
+
+app.post('/api/improve-cv', async (req, res) => {
+  try {
+    const { cvData, lang = 'en' } = req.body;
+    if (!cvData) return res.status(400).json({ error: 'cvData required' });
+
+    const isEs = lang === 'es';
+    const prompt = `You are a senior ATS-certified CV writer and career coach. ${isEs ? 'All text fields must be written in Spanish.' : 'All text fields must be written in English.'}
+
+You will receive raw CV data and must produce a COMPLETE, ATS-optimized CV rewrite.
+
+RAW CV DATA:
+${JSON.stringify(cvData, null, 2)}
+
+ATS RULES TO FOLLOW:
+- Use standard section headings (Summary, Experience, Skills, Education, Certifications, Languages)
+- Start every achievement bullet with a strong action verb (Led, Built, Reduced, Increased, Designed, Implemented...)
+- Quantify results wherever possible (%, $, X times, team size, etc.)
+- Remove vague phrases like "responsible for" or "helped with"
+- Keep summary to 3-4 sentences max, value-proposition first
+- Skills must be keyword-rich for recruiters and ATS scanners
+- Group skills by category for readability
+
+Return ONLY a valid JSON object with EXACTLY this structure:
+{
+  "ats_score": <number 0-100 representing how ATS-friendly the IMPROVED version is>,
+  "ats_improvements": [<list of specific changes made to improve ATS score>],
+  "contact": {
+    "name": "${cvData.name || ''}",
+    "title": "<improved professional title/headline>",
+    "email": "${cvData.email || ''}",
+    "phone": "${cvData.phone || ''}",
+    "location": "${cvData.location || ''}",
+    "linkedin": "${cvData.linkedin || ''}",
+    "github": "${cvData.github || ''}"
+  },
+  "professional_summary": "<Rewritten 3-4 sentence summary. Start with a value proposition. Include years of experience, core skills, and key impact.>",
+  "experience": [
+    {
+      "title": "<job title>",
+      "company": "<company name>",
+      "period": "<e.g. Jan 2022 – Present>",
+      "location": "<city or Remote>",
+      "achievements": [
+        "<Action verb + what you did + measurable result>",
+        "<Action verb + what you did + measurable result>"
+      ]
+    }
+  ],
+  "skills": {
+    "${isEs ? 'Técnicas' : 'Technical'}": [<list of technical skills>],
+    "${isEs ? 'Herramientas' : 'Tools & Platforms'}": [<list of tools, frameworks, platforms>],
+    "${isEs ? 'Blandas' : 'Soft Skills'}": [<list of soft skills>]
+  },
+  "education": [
+    {
+      "degree": "<degree name>",
+      "school": "<institution name>",
+      "year": "<graduation year or period>",
+      "details": "<optional: GPA, honors, relevant coursework>"
+    }
+  ],
+  "certifications": [<list of certification strings, e.g. "AWS Certified Developer – Associate (2023)">],
+  "languages": [<list of language strings, e.g. "Spanish (Native)", "English (Professional)">],
+  "tips": [<3-5 specific, actionable tips to further improve this CV>],
+  "missing_sections": [<sections that are missing and why they matter for this profile>]
+}`;
+
+    console.log('[CV Improve] Calling AI for:', cvData.name || 'unknown');
+    const raw = await callAI(prompt, { maxTokens: 6000, prefill: '{' });
+    const improved = parseJSON(raw);
+    if (!improved) {
+      console.error('[CV Improve] Parse failed. Preview:', raw.slice(0, 300));
+      return res.status(500).json({ error: 'AI did not return valid response' });
+    }
+
+    console.log('[CV Improve] Done for:', cvData.name, '| ATS score:', improved.ats_score);
+    saveCVImprovement({ mode: 'improve', candidateName: cvData.name, result: improved }).catch(() => {});
+    res.json({ success: true, ...improved });
+
+  } catch (error) {
+    console.error('[CV Improve] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// DOWNLOAD CV AS WORD (.docx)
+// ============================================
+
+app.post('/api/download-cv-docx', async (req, res) => {
+  try {
+    const { cvData, improved } = req.body;
+    if (!cvData && !improved) return res.status(400).json({ error: 'cvData required' });
+
+    const {
+      Document, Packer, Paragraph, TextRun, HeadingLevel,
+      AlignmentType, BorderStyle
+    } = require('docx');
+
+    // Use improved ATS structure if available, else raw cvData
+    const imp = improved || {};
+    const raw = cvData || {};
+
+    const contact    = imp.contact || {};
+    const name       = contact.name || raw.name || 'CV';
+    const jobTitle   = contact.title || raw.current_position || '';
+    const email      = contact.email || raw.email || '';
+    const phone      = contact.phone || raw.phone || '';
+    const location   = contact.location || raw.location || '';
+    const linkedin   = contact.linkedin || raw.linkedin || '';
+    const github     = contact.github || raw.github || '';
+    const summary    = imp.professional_summary || raw.summary || '';
+    const experience = imp.experience || [];
+    const skillsCat  = imp.skills || null;
+    const rawSkills  = raw.skills || [];
+    const education  = imp.education || raw.education || [];
+    const certs      = imp.certifications || raw.certifications || [];
+    const langs      = imp.languages || raw.languages || [];
+
+    const hr = () => new Paragraph({
+      border: { bottom: { color: '1e3a5f', space: 1, style: BorderStyle.SINGLE, size: 4 } },
+      spacing: { before: 100, after: 160 }
+    });
+
+    const sectionHeading = (text) => new Paragraph({
+      children: [new TextRun({ text: text.toUpperCase(), bold: true, size: 24, color: '1e3a5f', characterSpacing: 40 })],
+      spacing: { before: 280, after: 60 }
+    });
+
+    const bullet = (text) => new Paragraph({
+      bullet: { level: 0 },
+      children: [new TextRun({ text: String(text), size: 20 })],
+      spacing: { after: 40 }
+    });
+
+    const children = [
+      // ── NAME ──
+      new Paragraph({
+        children: [new TextRun({ text: name, bold: true, size: 56, color: '111827' })],
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 60 }
+      }),
+
+      // ── JOB TITLE ──
+      ...(jobTitle ? [new Paragraph({
+        children: [new TextRun({ text: jobTitle, size: 26, color: '4b5563', italics: true })],
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 80 }
+      })] : []),
+
+      // ── CONTACT LINE ──
+      new Paragraph({
+        children: [new TextRun({
+          text: [email, phone, location, linkedin && `in: ${linkedin}`, github && `gh: ${github}`]
+            .filter(Boolean).join('   |   '),
+          size: 19, color: '6b7280'
+        })],
+        alignment: AlignmentType.CENTER,
+        spacing: { after: 120 }
+      }),
+
+      hr(),
+
+      // ── PROFESSIONAL SUMMARY ──
+      ...(summary ? [
+        sectionHeading('Professional Summary'),
+        hr(),
+        new Paragraph({ children: [new TextRun({ text: summary, size: 21 })], spacing: { after: 200 } })
+      ] : []),
+
+      // ── EXPERIENCE ──
+      ...(experience.length > 0 ? [
+        sectionHeading('Experience'),
+        hr(),
+        ...experience.flatMap(exp => [
+          new Paragraph({
+            children: [
+              new TextRun({ text: exp.title || '', bold: true, size: 23 }),
+              new TextRun({ text: exp.company ? `  —  ${exp.company}` : '', size: 23, color: '374151' }),
+              new TextRun({ text: exp.period ? `   (${exp.period})` : '', size: 20, color: '9ca3af' }),
+            ],
+            spacing: { before: 160, after: 40 }
+          }),
+          ...(exp.location ? [new Paragraph({
+            children: [new TextRun({ text: exp.location, size: 19, color: '9ca3af', italics: true })],
+            spacing: { after: 60 }
+          })] : []),
+          ...(exp.achievements || []).map(a => bullet(a)),
+          new Paragraph({ spacing: { after: 60 } })
+        ])
+      ] : []),
+
+      // ── SKILLS ──
+      ...(skillsCat ? [
+        sectionHeading('Skills'),
+        hr(),
+        ...Object.entries(skillsCat).flatMap(([cat, list]) =>
+          Array.isArray(list) && list.length > 0 ? [
+            new Paragraph({
+              children: [
+                new TextRun({ text: cat + ':  ', bold: true, size: 21, color: '374151' }),
+                new TextRun({ text: list.join('  ·  '), size: 21 })
+              ],
+              spacing: { after: 80 }
+            })
+          ] : []
+        )
+      ] : rawSkills.length > 0 ? [
+        sectionHeading('Skills'),
+        hr(),
+        new Paragraph({ children: [new TextRun({ text: rawSkills.join('  ·  '), size: 21 })], spacing: { after: 200 } })
+      ] : []),
+
+      // ── EDUCATION ──
+      ...(education.length > 0 ? [
+        sectionHeading('Education'),
+        hr(),
+        ...education.map(e => {
+          const text = typeof e === 'string' ? e
+            : [e.degree, e.school && `@ ${e.school}`, e.year, e.details].filter(Boolean).join('  —  ');
+          return new Paragraph({
+            children: [new TextRun({ text, size: 21 })],
+            spacing: { after: 80 }
+          });
+        })
+      ] : []),
+
+      // ── CERTIFICATIONS ──
+      ...(certs.length > 0 ? [
+        sectionHeading('Certifications'),
+        hr(),
+        ...certs.map(c => bullet(typeof c === 'string' ? c : c.name || JSON.stringify(c)))
+      ] : []),
+
+      // ── LANGUAGES ──
+      ...(langs.length > 0 ? [
+        sectionHeading('Languages'),
+        hr(),
+        new Paragraph({
+          children: [new TextRun({ text: langs.join('   |   '), size: 21 })],
+          spacing: { after: 200 }
+        })
+      ] : []),
+
+      // ── FOOTER ──
+      new Paragraph({ spacing: { after: 200 } }),
+      new Paragraph({
+        children: [new TextRun({ text: 'Generated by LikeTalent · liketalent.io', size: 17, color: 'a1a1aa', italics: true })],
+        alignment: AlignmentType.CENTER
+      })
+    ];
+
+    const doc = new Document({ sections: [{ properties: {}, children }] });
+    const buffer = await Packer.toBuffer(doc);
+    const filename = `${name.replace(/\s+/g, '_')}_ATS_CV.docx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(buffer);
+
+    console.log('[CV Download] DOCX sent:', filename);
+
+  } catch (error) {
+    console.error('[CV Download] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// TAILOR CV TO JOB DESCRIPTION
+// ============================================
+
+app.post('/api/tailor-cv', async (req, res) => {
+  try {
+    const { cvData, jobDescription, lang = 'en' } = req.body;
+    if (!cvData || !jobDescription) return res.status(400).json({ error: 'cvData and jobDescription required' });
+
+    const isEs = lang === 'es';
+    const prompt = `You are a senior ATS-certified CV writer. ${isEs ? 'All text fields must be written in Spanish.' : 'All text fields must be written in English.'}
+
+Your task: rewrite the candidate's CV specifically tailored for the following job description.
+
+JOB DESCRIPTION:
+${jobDescription}
+
+CANDIDATE'S CV DATA:
+${JSON.stringify(cvData, null, 2)}
+
+RULES:
+- Prioritize and highlight skills/experience that directly match the job description
+- Mirror keywords from the job description (ATS matching)
+- Rewrite achievements to emphasize relevance to this specific role
+- Adjust the professional summary to speak directly to this job
+- Add a "match_score" reflecting how well the candidate fits (0-100)
+- If the candidate has gaps, suggest what to address in "missing_match"
+
+Return ONLY a valid JSON object:
+{
+  "match_score": <number 0-100>,
+  "match_summary": "<why this candidate is a good/poor fit — 2 sentences>",
+  "missing_match": [<skills or experience gaps vs the job>],
+  "contact": {
+    "name": "...", "title": "<job-targeted headline>",
+    "email": "...", "phone": "...", "location": "...", "linkedin": "...", "github": "..."
+  },
+  "professional_summary": "<tailored 3-4 sentence summary referencing the job role>",
+  "experience": [
+    {
+      "title": "...", "company": "...", "period": "...", "location": "...",
+      "achievements": ["<rewritten with job-relevant keywords>", "..."]
+    }
+  ],
+  "skills": {
+    "${isEs ? 'Técnicas' : 'Technical'}": [],
+    "${isEs ? 'Herramientas' : 'Tools & Platforms'}": [],
+    "${isEs ? 'Blandas' : 'Soft Skills'}": []
+  },
+  "education": [{ "degree": "...", "school": "...", "year": "...", "details": "..." }],
+  "certifications": [],
+  "languages": [],
+  "tips": [<specific tips to improve match for this job>]
+}`;
+
+    console.log('[CV Tailor] Calling AI for:', cvData.name || 'unknown');
+    const raw = await callAI(prompt, { maxTokens: 6000, prefill: '{' });
+    const tailored = parseJSON(raw);
+    if (!tailored) {
+      console.error('[CV Tailor] Parse failed. Preview:', raw.slice(0, 300));
+      return res.status(500).json({ error: 'AI did not return valid response' });
+    }
+
+    console.log('[CV Tailor] Done. Match score:', tailored.match_score);
+    saveCVImprovement({ mode: 'tailor', candidateName: cvData.name, result: tailored, jobDescription }).catch(() => {});
+    res.json({ success: true, ...tailored });
+
+  } catch (error) {
+    console.error('[CV Tailor] Error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================
+// OAUTH — GOOGLE
+// ============================================
+
+app.get('/auth/google', (req, res) => {
+  if (!GOOGLE_CLIENT_ID) return res.status(503).json({ error: 'Google OAuth not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET in .env' });
+  const params = new URLSearchParams({
+    client_id:     GOOGLE_CLIENT_ID,
+    redirect_uri:  `${BACKEND_URL}/auth/google/callback`,
+    response_type: 'code',
+    scope:         'openid email profile',
+    access_type:   'online',
+    prompt:        'select_account',
+  });
+  res.redirect('https://accounts.google.com/o/oauth2/v2/auth?' + params.toString());
+});
+
+app.get('/auth/google/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error || !code) return res.redirect(`${FRONTEND_URL}/?auth_error=google_denied`);
+
+  try {
+    // Exchange code for tokens
+    const tokenBody = new URLSearchParams({
+      code, client_id: GOOGLE_CLIENT_ID, client_secret: GOOGLE_CLIENT_SECRET,
+      redirect_uri: `${BACKEND_URL}/auth/google/callback`, grant_type: 'authorization_code',
+    }).toString();
+
+    const tokenRes = await new Promise((resolve, reject) => {
+      const req2 = https.request({
+        hostname: 'oauth2.googleapis.com', path: '/token', method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(tokenBody) }
+      }, (r) => { let d = ''; r.on('data', c => d += c); r.on('end', () => resolve({ status: r.statusCode, body: d })); });
+      req2.on('error', reject); req2.write(tokenBody); req2.end();
+    });
+
+    const tokens = JSON.parse(tokenRes.body);
+    if (!tokens.access_token) throw new Error('No access_token from Google');
+
+    // Get user info
+    const userRes = await new Promise((resolve, reject) => {
+      const req3 = https.request({
+        hostname: 'www.googleapis.com', path: '/oauth2/v2/userinfo', method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token }
+      }, (r) => { let d = ''; r.on('data', c => d += c); r.on('end', () => resolve({ body: d })); });
+      req3.on('error', reject); req3.end();
+    });
+
+    const user = JSON.parse(userRes.body);
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    oauthSessions.set(sessionToken, {
+      name: user.name || user.email, email: user.email,
+      picture: user.picture || '', provider: 'google'
+    });
+
+    console.log('[Auth] Google login:', user.email);
+    saveAuthSession({ provider: 'google', email: user.email, name: user.name, picture: user.picture }).catch(() => {});
+    const params = new URLSearchParams({ token: sessionToken, name: encodeURIComponent(user.name || ''), provider: 'google' });
+    res.redirect(`${FRONTEND_URL}/auth/callback?` + params.toString());
+
+  } catch (e) {
+    console.error('[Auth] Google callback error:', e.message);
+    res.redirect(`${FRONTEND_URL}/?auth_error=google_failed`);
+  }
+});
+
+// ============================================
+// OAUTH — LINKEDIN
+// ============================================
+
+app.get('/auth/linkedin', (req, res) => {
+  if (!LINKEDIN_CLIENT_ID) return res.status(503).json({ error: 'LinkedIn OAuth not configured. Set LINKEDIN_CLIENT_ID and LINKEDIN_CLIENT_SECRET in .env' });
+  const params = new URLSearchParams({
+    response_type: 'code',
+    client_id:     LINKEDIN_CLIENT_ID,
+    redirect_uri:  `${BACKEND_URL}/auth/linkedin/callback`,
+    scope:         'openid profile email',
+  });
+  res.redirect('https://www.linkedin.com/oauth/v2/authorization?' + params.toString());
+});
+
+app.get('/auth/linkedin/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error || !code) return res.redirect(`${FRONTEND_URL}/?auth_error=linkedin_denied`);
+
+  try {
+    // Exchange code for access token
+    const tokenBody = new URLSearchParams({
+      grant_type: 'authorization_code', code,
+      client_id: LINKEDIN_CLIENT_ID, client_secret: LINKEDIN_CLIENT_SECRET,
+      redirect_uri: `${BACKEND_URL}/auth/linkedin/callback`,
+    }).toString();
+
+    const tokenRes = await new Promise((resolve, reject) => {
+      const req2 = https.request({
+        hostname: 'www.linkedin.com', path: '/oauth/v2/accessToken', method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(tokenBody) }
+      }, (r) => { let d = ''; r.on('data', c => d += c); r.on('end', () => resolve({ status: r.statusCode, body: d })); });
+      req2.on('error', reject); req2.write(tokenBody); req2.end();
+    });
+
+    const tokens = JSON.parse(tokenRes.body);
+    if (!tokens.access_token) throw new Error('No access_token from LinkedIn');
+
+    // Get user info (OpenID Connect userinfo endpoint)
+    const userRes = await new Promise((resolve, reject) => {
+      const req3 = https.request({
+        hostname: 'api.linkedin.com', path: '/v2/userinfo', method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token }
+      }, (r) => { let d = ''; r.on('data', c => d += c); r.on('end', () => resolve({ body: d })); });
+      req3.on('error', reject); req3.end();
+    });
+
+    const user = JSON.parse(userRes.body);
+    const name = `${user.given_name || ''} ${user.family_name || ''}`.trim() || user.email;
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    oauthSessions.set(sessionToken, {
+      name, email: user.email || '', picture: user.picture || '', provider: 'linkedin'
+    });
+
+    console.log('[Auth] LinkedIn login:', user.email);
+    saveAuthSession({ provider: 'linkedin', email: user.email, name, picture: user.picture }).catch(() => {});
+    const params = new URLSearchParams({ token: sessionToken, name: encodeURIComponent(name), provider: 'linkedin' });
+    res.redirect(`${FRONTEND_URL}/auth/callback?` + params.toString());
+
+  } catch (e) {
+    console.error('[Auth] LinkedIn callback error:', e.message);
+    res.redirect(`${FRONTEND_URL}/?auth_error=linkedin_failed`);
+  }
+});
+
+// ── Validate OAuth session token ──────────────────────────────────────────────
+app.get('/auth/session', (req, res) => {
+  const token = req.headers['x-session-token'] || req.query.token;
+  const session = oauthSessions.get(token);
+  if (!session) return res.status(401).json({ valid: false });
+  res.json({ valid: true, ...session });
+});
+
+// ============================================
+// OAUTH — GITHUB
+// ============================================
+
+app.get('/auth/github', (req, res) => {
+  if (!GITHUB_CLIENT_ID) return res.status(503).json({ error: 'GitHub OAuth not configured. Set GITHUB_CLIENT_ID and GITHUB_CLIENT_SECRET in .env' });
+  const params = new URLSearchParams({
+    client_id:    GITHUB_CLIENT_ID,
+    redirect_uri: `${BACKEND_URL}/auth/github/callback`,
+    scope:        'user:email',
+  });
+  res.redirect('https://github.com/login/oauth/authorize?' + params.toString());
+});
+
+app.get('/auth/github/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error || !code) return res.redirect(`${FRONTEND_URL}/?auth_error=github_denied`);
+
+  try {
+    // Exchange code for access token
+    const tokenBody = JSON.stringify({
+      client_id: GITHUB_CLIENT_ID,
+      client_secret: GITHUB_CLIENT_SECRET,
+      code,
+      redirect_uri: `${BACKEND_URL}/auth/github/callback`,
+    });
+
+    const tokenRes = await new Promise((resolve, reject) => {
+      const req2 = https.request({
+        hostname: 'github.com', path: '/login/oauth/access_token', method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Accept': 'application/json',
+          'Content-Length': Buffer.byteLength(tokenBody),
+        },
+      }, (r) => { let d = ''; r.on('data', c => d += c); r.on('end', () => resolve({ status: r.statusCode, body: d })); });
+      req2.on('error', reject); req2.write(tokenBody); req2.end();
+    });
+
+    const tokens = JSON.parse(tokenRes.body);
+    if (!tokens.access_token) throw new Error('No access_token from GitHub: ' + JSON.stringify(tokens));
+
+    // Get user profile
+    const userRes = await new Promise((resolve, reject) => {
+      const req3 = https.request({
+        hostname: 'api.github.com', path: '/user', method: 'GET',
+        headers: { 'Authorization': 'Bearer ' + tokens.access_token, 'User-Agent': 'liketalent-app' },
+      }, (r) => { let d = ''; r.on('data', c => d += c); r.on('end', () => resolve({ body: d })); });
+      req3.on('error', reject); req3.end();
+    });
+
+    const user = JSON.parse(userRes.body);
+
+    // Email may be null if private — fetch from /user/emails
+    let email = user.email || '';
+    if (!email) {
+      try {
+        const emailsRes = await new Promise((resolve, reject) => {
+          const req4 = https.request({
+            hostname: 'api.github.com', path: '/user/emails', method: 'GET',
+            headers: { 'Authorization': 'Bearer ' + tokens.access_token, 'User-Agent': 'liketalent-app' },
+          }, (r) => { let d = ''; r.on('data', c => d += c); r.on('end', () => resolve({ body: d })); });
+          req4.on('error', reject); req4.end();
+        });
+        const emails = JSON.parse(emailsRes.body);
+        const primary = emails.find(e => e.primary) || emails[0];
+        if (primary) email = primary.email;
+      } catch {}
+    }
+
+    const sessionToken = crypto.randomBytes(32).toString('hex');
+    oauthSessions.set(sessionToken, {
+      name: user.name || user.login, email,
+      picture: user.avatar_url || '', provider: 'github',
+    });
+
+    console.log('[Auth] GitHub login:', user.login, email);
+    saveAuthSession({ provider: 'github', email, name: user.name || user.login, picture: user.avatar_url, identifier: user.login }).catch(() => {});
+    const params = new URLSearchParams({
+      token: sessionToken,
+      name: encodeURIComponent(user.name || user.login || ''),
+      provider: 'github',
+    });
+    res.redirect(`${FRONTEND_URL}/auth/callback?` + params.toString());
+
+  } catch (e) {
+    console.error('[Auth] GitHub callback error:', e.message);
+    res.redirect(`${FRONTEND_URL}/?auth_error=github_failed`);
+  }
+});
+
+// ============================================
+// SUPABASE STATUS — diagnóstico de conexión
+// ============================================
+
+app.get('/api/supabase-status', async (req, res) => {
+  if (!SUPABASE_URL || !SUPABASE_KEY || SUPABASE_KEY === 'your_supabase_key_here') {
+    return res.json({ configured: false, message: 'SUPABASE_KEY no configurada en .env' });
+  }
+
+  const tables = ['cv_analyses', 'auth_sessions', 'cv_improvements'];
+  const results = {};
+
+  for (const table of tables) {
+    try {
+      const r = await fetch(`${SUPABASE_URL}/rest/v1/${table}?select=count&limit=1`, {
+        headers: { 'apikey': SUPABASE_KEY, 'Authorization': `Bearer ${SUPABASE_KEY}` },
+      });
+      if (r.status === 200) {
+        results[table] = { ok: true };
+      } else if (r.status === 404 || r.status === 400) {
+        const body = await r.text();
+        results[table] = { ok: false, error: 'Tabla no existe — ejecuta supabase-schema.sql', detail: body };
+      } else {
+        results[table] = { ok: false, error: `HTTP ${r.status}` };
+      }
+    } catch (e) {
+      results[table] = { ok: false, error: e.message };
+    }
+  }
+
+  const allOk = Object.values(results).every(t => t.ok);
+  res.json({ configured: true, connected: allOk, tables: results, supabase_url: SUPABASE_URL });
+});
+
 app.listen(PORT, () => {
-  console.log('ETHV Backend running on http://localhost:' + PORT);
+  console.log('LikeTalent Backend running on http://localhost:' + PORT);
   console.log('Supabase URL:', SUPABASE_URL || 'NO configurado');
 });
 

@@ -16,7 +16,7 @@ export default function MainLayout({ children }: { children: React.ReactNode }) 
       </motion.main>
       <footer className="bg-zinc-950 border-t border-zinc-900 py-8 mt-auto">
         <div className="max-w-7xl mx-auto px-4 text-center text-zinc-500 text-sm">
-          <p>&copy; 2026 ETHV Talent Validation Agent. Built on Ethereum.</p>
+          <p>&copy; 2026 LikeTalent — Centro de Talento y Habilidades.</p>
         </div>
       </footer>
     </div>

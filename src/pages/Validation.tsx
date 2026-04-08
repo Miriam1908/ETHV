@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
+import { useAccount } from 'wagmi';
 import {
   Trophy, ArrowLeft, ChevronRight, Loader2, Brain,
   CheckCircle2, XCircle, Sparkles, AlertCircle,
-  RotateCcw, Award, Code2, MessageSquare, List
+  RotateCcw, Award, Code2, MessageSquare, List,
+  Download, ExternalLink
 } from 'lucide-react';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -29,6 +31,15 @@ interface QuestionResult {
 }
 
 type Step = 'select' | 'loading' | 'test' | 'submitting' | 'result';
+type ClaimState = 'idle' | 'loading' | 'done' | 'error';
+
+interface ClaimResult {
+  pdfBase64: string;
+  pdfHash: string;
+  tokenId: number | null;
+  txHash: string | null;
+  explorerUrl: string | null;
+}
 
 const DEFAULT_SKILLS = ['Solidity', 'React', 'TypeScript', 'Python', 'Node.js', 'Rust', 'Web3.js', 'GraphQL'];
 const LEVEL_OPTIONS = [
@@ -106,6 +117,7 @@ const T = {
 // ── Component ────────────────────────────────────────────────────────────────
 
 export default function Validation() {
+  const { address } = useAccount();
   const [step, setStep] = useState<Step>('select');
   const [lang, setLang] = useState<'en' | 'es'>('en');
   const [selectedSkill, setSelectedSkill] = useState('');
@@ -121,6 +133,9 @@ export default function Validation() {
   const [passed, setPassed] = useState(false);
   const [error, setError] = useState('');
   const [cvSkills, setCvSkills] = useState<string[]>([]);
+  const [claimState, setClaimState] = useState<ClaimState>('idle');
+  const [claimResult, setClaimResult] = useState<ClaimResult | null>(null);
+  const [claimError, setClaimError] = useState('');
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const t = T[lang];
@@ -214,6 +229,44 @@ export default function Validation() {
     setOpenText('');
     setQuizResults([]);
     setError('');
+    setClaimState('idle');
+    setClaimResult(null);
+    setClaimError('');
+  };
+
+  const claimBadge = async () => {
+    if (!passed || claimState !== 'idle') return;
+    const wallet = address || import.meta.env.VITE_WALLET_BYPASS === 'true' ? (address || '0x0000000000000000000000000000000000000000') : null;
+    if (!wallet) { setClaimError('Connect your wallet first'); return; }
+
+    setClaimState('loading');
+    setClaimError('');
+    try {
+      const apiBase = import.meta.env.VITE_API_BASE_URL || '/api';
+      const res = await fetch(`${apiBase}/mint-certificate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ wallet, skill: selectedSkill, score: finalScore, level: selectedLevel }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || `Error ${res.status}`);
+      }
+      const data = await res.json();
+      setClaimResult(data);
+      setClaimState('done');
+    } catch (e: any) {
+      setClaimError(e.message || 'Failed to claim badge');
+      setClaimState('error');
+    }
+  };
+
+  const downloadPDF = () => {
+    if (!claimResult?.pdfBase64) return;
+    const link = document.createElement('a');
+    link.href = `data:application/pdf;base64,${claimResult.pdfBase64}`;
+    link.download = `certificate-${selectedSkill}-${selectedLevel}.pdf`;
+    link.click();
   };
 
   const typeIcon = (type: string) => {
@@ -529,15 +582,56 @@ export default function Validation() {
               ))}
             </div>
 
+            {/* Claim result */}
+            {claimState === 'done' && claimResult && (
+              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+                className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4 space-y-3">
+                <p className="text-emerald-400 font-bold text-sm flex items-center gap-2">
+                  <CheckCircle2 size={16} /> Certificate generated successfully
+                </p>
+                <p className="text-zinc-500 text-xs font-mono break-all">
+                  SHA-256: {claimResult.pdfHash}
+                </p>
+                {claimResult.tokenId !== null && (
+                  <p className="text-zinc-400 text-xs">NFT Token ID: <span className="text-white font-bold">#{claimResult.tokenId}</span></p>
+                )}
+                <div className="flex gap-2 flex-wrap">
+                  <button onClick={downloadPDF}
+                    className="flex items-center gap-1.5 bg-emerald-500 hover:bg-emerald-400 text-black text-xs font-bold px-3 py-2 rounded-lg transition-all">
+                    <Download size={13} /> Download PDF
+                  </button>
+                  {claimResult.explorerUrl && (
+                    <a href={claimResult.explorerUrl} target="_blank" rel="noopener noreferrer"
+                      className="flex items-center gap-1.5 bg-zinc-800 hover:bg-zinc-700 text-white text-xs font-bold px-3 py-2 rounded-lg transition-all">
+                      <ExternalLink size={13} /> View on Explorer
+                    </a>
+                  )}
+                </div>
+              </motion.div>
+            )}
+
+            {claimState === 'error' && (
+              <div className="rounded-xl border border-red-500/30 bg-red-500/5 p-3 text-red-400 text-xs">
+                {claimError}
+              </div>
+            )}
+
             {/* Actions */}
             <div className="grid grid-cols-2 gap-3">
               <button onClick={reset}
                 className="bg-zinc-900 hover:bg-zinc-800 border border-zinc-800 text-white font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2">
                 <RotateCcw size={16} /> {t.tryAnother}
               </button>
-              <button disabled={!passed}
+              <button
+                onClick={claimBadge}
+                disabled={!passed || claimState === 'loading' || claimState === 'done'}
                 className="bg-emerald-500 hover:bg-emerald-400 disabled:bg-zinc-800 disabled:text-zinc-500 text-black font-bold py-3 rounded-xl transition-all flex items-center justify-center gap-2">
-                <Award size={16} /> {t.claimBadge}
+                {claimState === 'loading'
+                  ? <><Loader2 size={16} className="animate-spin" /> Generating…</>
+                  : claimState === 'done'
+                  ? <><CheckCircle2 size={16} /> Claimed</>
+                  : <><Award size={16} /> {t.claimBadge}</>
+                }
               </button>
             </div>
           </motion.div>

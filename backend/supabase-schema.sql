@@ -72,6 +72,32 @@ CREATE TABLE IF NOT EXISTS cv_improvements (
   tips                 JSONB
 );
 
+-- ── Tabla: certificates ─────────────────────────────────────
+-- Guarda cada certificado NFT emitido tras aprobar la validación
+CREATE TABLE IF NOT EXISTS certificates (
+  id          BIGSERIAL PRIMARY KEY,
+  created_at  TIMESTAMPTZ DEFAULT NOW(),
+
+  -- Identidad
+  wallet      TEXT NOT NULL,           -- dirección MetaMask del usuario
+  skill       TEXT NOT NULL,           -- habilidad validada
+  score       INTEGER NOT NULL,        -- puntaje obtenido (0-100)
+  level       TEXT NOT NULL,           -- Junior | Mid | Senior | Expert
+
+  -- PDF
+  pdf_hash    TEXT NOT NULL,           -- sha256 del PDF del certificado (hex)
+
+  -- Blockchain
+  token_id    INTEGER,                 -- tokenId del NFT en zkSYS (null si mint pendiente)
+  tx_hash     TEXT,                    -- hash de la transacción en zkSYS
+  contract    TEXT DEFAULT '0x8786996dA2Ed941FA4a0Aa7F0226fe50976C1539'
+);
+
+CREATE INDEX IF NOT EXISTS idx_certificates_wallet ON certificates(wallet);
+CREATE INDEX IF NOT EXISTS idx_certificates_created_at ON certificates(created_at DESC);
+
+ALTER TABLE certificates DISABLE ROW LEVEL SECURITY;
+
 -- ── Índices útiles ──────────────────────────────────────────
 CREATE INDEX IF NOT EXISTS idx_cv_analyses_email      ON cv_analyses(email);
 CREATE INDEX IF NOT EXISTS idx_cv_analyses_created_at ON cv_analyses(created_at DESC);

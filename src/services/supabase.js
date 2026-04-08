@@ -63,4 +63,18 @@ async function getCVAnalyses(email) {
   return response.json();
 }
 
-export { saveCVAnalysis, getCVAnalyses };
+async function getCertificatesByWallet(wallet) {
+  const response = await fetch(
+    `${SUPABASE_URL}/rest/v1/certificates?wallet=eq.${encodeURIComponent(wallet)}&order=created_at.desc`,
+    {
+      headers: {
+        'apikey': SUPABASE_KEY,
+        'Authorization': `Bearer ${SUPABASE_KEY}`
+      }
+    }
+  );
+  if (!response.ok) return [];
+  return response.json();
+}
+
+export { saveCVAnalysis, getCVAnalyses, getCertificatesByWallet };

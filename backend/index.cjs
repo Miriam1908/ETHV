@@ -1724,6 +1724,212 @@ app.get('/api/supabase-status', async (req, res) => {
   res.json({ configured: true, connected: allOk, tables: results, supabase_url: SUPABASE_URL });
 });
 
+// ============================================
+// CERTIFICATE: Generate PDF + save hash to Supabase + mint NFT
+// ============================================
+
+const PDFDocument = require('pdfkit');
+const { ethers }  = require('ethers');
+const { Wallet, Provider } = require('zksync-ethers');
+
+const ZKSYS_RPC        = 'https://rpc-zk.tanenbaum.io/';
+const CONTRACT_ADDRESS = '0x8786996dA2Ed941FA4a0Aa7F0226fe50976C1539';
+const CONTRACT_ABI     = [
+  'function mintCertificate(address to, string skillName, uint8 score, string level, string uri, bytes32 cvHash) external returns (uint256)',
+  'function totalCertificates() external view returns (uint256)'
+];
+
+// Build a PDF certificate and return its Buffer
+function buildCertificatePDF({ skill, score, level, wallet, issuedAt }) {
+  return new Promise((resolve, reject) => {
+    const doc    = new PDFDocument({ size: 'A4', layout: 'landscape', margin: 60 });
+    const chunks = [];
+    doc.on('data',  chunk => chunks.push(chunk));
+    doc.on('end',   () => resolve(Buffer.concat(chunks)));
+    doc.on('error', reject);
+
+    const W = doc.page.width;
+    const H = doc.page.height;
+
+    // Background
+    doc.rect(0, 0, W, H).fill('#0a0a0a');
+
+    // Border
+    doc.rect(24, 24, W - 48, H - 48).lineWidth(1.5).stroke('#10b981');
+
+    // Inner accent border
+    doc.rect(30, 30, W - 60, H - 60).lineWidth(0.5).stroke('#064e3b');
+
+    // Title
+    doc.fillColor('#10b981').fontSize(11).font('Helvetica')
+       .text('ETHV TALENT PLATFORM', 0, 58, { align: 'center', characterSpacing: 4 });
+
+    // Main heading
+    doc.fillColor('#ffffff').fontSize(38).font('Helvetica-Bold')
+       .text('SKILL CERTIFICATE', 0, 85, { align: 'center' });
+
+    // Divider
+    doc.moveTo(W / 2 - 120, 140).lineTo(W / 2 + 120, 140).lineWidth(1).stroke('#10b981');
+
+    // Body text
+    doc.fillColor('#a1a1aa').fontSize(13).font('Helvetica')
+       .text('This certifies that the holder of wallet', 0, 160, { align: 'center' });
+
+    // Wallet address
+    doc.fillColor('#ffffff').fontSize(11).font('Helvetica-Bold')
+       .text(wallet, 0, 182, { align: 'center' });
+
+    doc.fillColor('#a1a1aa').fontSize(13).font('Helvetica')
+       .text('has successfully validated the skill', 0, 210, { align: 'center' });
+
+    // Skill name
+    doc.fillColor('#10b981').fontSize(44).font('Helvetica-Bold')
+       .text(skill, 0, 235, { align: 'center' });
+
+    // Score + Level
+    const scoreX = W / 2 - 160;
+    const levelX = W / 2 + 10;
+    const boxY   = 305;
+
+    doc.rect(scoreX, boxY, 140, 72).fill('#052e16');
+    doc.fillColor('#10b981').fontSize(9).font('Helvetica')
+       .text('SCORE', scoreX, boxY + 10, { width: 140, align: 'center', characterSpacing: 2 });
+    doc.fillColor('#ffffff').fontSize(36).font('Helvetica-Bold')
+       .text(`${score}%`, scoreX, boxY + 24, { width: 140, align: 'center' });
+
+    doc.rect(levelX, boxY, 140, 72).fill('#052e16');
+    doc.fillColor('#10b981').fontSize(9).font('Helvetica')
+       .text('LEVEL', levelX, boxY + 10, { width: 140, align: 'center', characterSpacing: 2 });
+    doc.fillColor('#ffffff').fontSize(28).font('Helvetica-Bold')
+       .text(level.toUpperCase(), levelX, boxY + 30, { width: 140, align: 'center' });
+
+    // Date
+    doc.fillColor('#52525b').fontSize(10).font('Helvetica')
+       .text(`Issued: ${issuedAt}`, 0, H - 90, { align: 'center' });
+
+    // Network badge
+    doc.fillColor('#10b981').fontSize(9).font('Helvetica')
+       .text('Blockchain: zkSYS Testnet · Chain ID: 57057', 0, H - 72, { align: 'center', characterSpacing: 1 });
+
+    // Contract address
+    doc.fillColor('#3f3f46').fontSize(8).font('Helvetica')
+       .text(`Contract: ${CONTRACT_ADDRESS}`, 0, H - 54, { align: 'center' });
+
+    doc.end();
+  });
+}
+
+app.post('/api/mint-certificate', async (req, res) => {
+  try {
+    const { wallet, skill, score, level } = req.body;
+
+    if (!wallet || !skill || score === undefined || !level) {
+      return res.status(400).json({ error: 'wallet, skill, score and level are required' });
+    }
+    if (score < 70) {
+      return res.status(400).json({ error: 'Score must be >= 70 to claim a certificate' });
+    }
+
+    const issuedAt = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+
+    // 1. Generate PDF
+    const pdfBuffer = await buildCertificatePDF({ skill, score, level, wallet, issuedAt });
+
+    // 2. Hash the PDF (sha256 → hex → bytes32 for the contract)
+    const pdfHash    = require('crypto').createHash('sha256').update(pdfBuffer).digest('hex');
+    const cvHashHex  = '0x' + pdfHash;                      // 0x + 64 hex chars = bytes32
+
+    // 3. Save to Supabase
+    let tokenId  = null;
+    let txHash   = null;
+    let mintError = null;
+
+    const SUPABASE_URL = process.env.SUPABASE_URL || '';
+    const SUPABASE_KEY = process.env.SUPABASE_KEY || '';
+
+    if (SUPABASE_URL && SUPABASE_KEY) {
+      await fetch(`${SUPABASE_URL}/rest/v1/certificates`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'apikey': SUPABASE_KEY,
+          'Authorization': `Bearer ${SUPABASE_KEY}`,
+          'Prefer': 'return=minimal'
+        },
+        body: JSON.stringify({ wallet, skill, score, level, pdf_hash: pdfHash })
+      });
+    }
+
+    // 4. Mint NFT on zkSYS (optional — requires PRIVATE_KEY in env)
+    const PRIVATE_KEY = process.env.ZKSYS_PRIVATE_KEY || process.env.PRIVATE_KEY || '';
+    if (PRIVATE_KEY) {
+      try {
+        const provider = new Provider(ZKSYS_RPC);
+        const signer   = new Wallet(PRIVATE_KEY, provider);
+        const contract = new ethers.Contract(CONTRACT_ADDRESS, CONTRACT_ABI, signer);
+
+        const tokenURI = `data:application/json;base64,${Buffer.from(JSON.stringify({
+          name: `${skill} Certificate`,
+          description: `Validated skill certificate for ${skill} — score ${score}% (${level})`,
+          attributes: [
+            { trait_type: 'Skill',  value: skill  },
+            { trait_type: 'Score',  value: score  },
+            { trait_type: 'Level',  value: level  },
+          ]
+        })).toString('base64')}`;
+
+        const tx = await contract.mintCertificate(
+          wallet,
+          skill,
+          score,
+          level,
+          tokenURI,
+          cvHashHex
+        );
+        const receipt = await tx.wait();
+        txHash  = receipt.hash;
+
+        // Read the tokenId from the Transfer event or totalCertificates
+        const total = await contract.totalCertificates();
+        tokenId = Number(total) - 1;
+
+        // Update Supabase with tokenId + txHash
+        if (SUPABASE_URL && SUPABASE_KEY) {
+          await fetch(`${SUPABASE_URL}/rest/v1/certificates?wallet=eq.${encodeURIComponent(wallet)}&pdf_hash=eq.${pdfHash}&order=created_at.desc&limit=1`, {
+            method: 'PATCH',
+            headers: {
+              'Content-Type': 'application/json',
+              'apikey': SUPABASE_KEY,
+              'Authorization': `Bearer ${SUPABASE_KEY}`,
+              'Prefer': 'return=minimal'
+            },
+            body: JSON.stringify({ token_id: tokenId, tx_hash: txHash })
+          });
+        }
+
+        console.log(`[Mint] ✅ tokenId=${tokenId} tx=${txHash}`);
+      } catch (e) {
+        mintError = e.message;
+        console.error('[Mint] NFT mint failed:', e.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      pdfBase64: pdfBuffer.toString('base64'),
+      pdfHash,
+      tokenId,
+      txHash,
+      mintError,
+      explorerUrl: txHash ? `https://explorer-zk.tanenbaum.io/tx/${txHash}` : null
+    });
+
+  } catch (error) {
+    console.error('[mint-certificate]', error);
+    res.status(500).json({ error: 'Failed to generate certificate' });
+  }
+});
+
 app.listen(PORT, () => {
   console.log('LikeTalent Backend running on http://localhost:' + PORT);
   console.log('Supabase URL:', SUPABASE_URL || 'NO configurado');

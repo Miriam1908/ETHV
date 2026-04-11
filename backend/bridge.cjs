@@ -42,7 +42,7 @@ async function downloadFile(url) {
 }
 
 async function callBackend(endpoint, body) {
-  const response = await axios.post(BACKEND_URL + endpoint, body, { timeout: 30000 });
+  const response = await axios.post(BACKEND_URL + endpoint, body, { timeout: 60000 });
   return response.data;
 }
 

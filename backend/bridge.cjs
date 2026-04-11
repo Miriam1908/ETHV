@@ -103,6 +103,7 @@ agent.addCommand('/start', async function(ctx) {
 });
 
 agent.addCommand('/hola', async function(ctx) {
+  console.log('[CTX]', JSON.stringify(Object.keys(ctx)));
   const roomId = ctx.roomId;
   const isChannel = ctx.message && ctx.message.__typename === 'ChannelMessage';
   const texto = 'Hola! Soy ETHV. Mandame el link de tu CV y lo analizo al instante.\n\nEscribe /start para ver todo lo que puedo hacer.';

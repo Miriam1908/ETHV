@@ -1,4 +1,3 @@
-cat > /workspaces/ETHV/backend/bridge.cjs << 'BRIDGE'
 require('dotenv').config();
 const { SuperDappAgent } = require('@superdapp/agents');
 const axios = require('axios');

@@ -219,9 +219,9 @@ app.post('/webhook', async (req, res) => {
     if (!text || isBot) return;
 
     const send = async (msg) => {
-      if (isChannel) await agent.sendChannelMessage(roomId, msg);
-      else await agent.sendConnectionMessage(roomId, msg);
-    };
+  if (isChannel) await agent.sendChannelMessage(payload.roomId, msg);
+  else await agent.sendConnectionMessage(payload.chatId || payload.roomId, msg);
+};
 
     if (text.startsWith('/')) {
       await agent.processRequest(payload);

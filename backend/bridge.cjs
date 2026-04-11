@@ -115,7 +115,25 @@ app.post('/webhook', async function(req, res) {
 
     if (payload.fileKey) console.log('[ETHV] FILE:', JSON.stringify({fileKey: payload.fileKey, fileMime: payload.fileMime, fileSize: payload.fileSize}));
     console.log('[ETHV] msg:', text ? text.substring(0, 80) : '', '| channel:', isChannel, '| room:', roomId);
-
+if (payload.fileKey && payload.fileMime === 'application/pdf') {
+  await send(agent, isChannel, roomId, chatId, 'Descargando tu CV adjunto...');
+  try {
+    const fileUrl = 'https://api.superdapp.ai/' + payload.fileKey;
+    const dl = await axios.get(fileUrl, {
+      responseType: 'arraybuffer',
+      timeout: 20000,
+      headers: { 'Authorization': 'Bearer ' + API_TOKEN }
+    });
+    const file = Buffer.from(dl.data).toString('base64');
+    const result = await callBackend('/api/analyze-cv', { file, filename: 'cv.pdf' });
+    sessions.set(roomId, { cvData: result, timestamp: Date.now() });
+    await send(agent, isChannel, roomId, chatId, formatAnalysis(result));
+  } catch(e) {
+    console.error('[ETHV] File download error:', e.message);
+    await send(agent, isChannel, roomId, chatId, 'No pude descargar el archivo. Intenta con un link de Google Drive.');
+  }
+  return;
+}
     if (!text || isBot) return;
 
     if (text === '/start' || text === '/hola') {

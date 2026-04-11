@@ -26,12 +26,25 @@ function extractLink(text) {
   return match ? match[0] : null;
 }
 
+function convertDriveLink(url) {
+  const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (match) {
+    return `https://drive.google.com/uc?export=download&id=${match[1]}`;
+  }
+  return url;
+}
+
 async function downloadFile(url) {
-  const response = await axios.get(url, { responseType: 'arraybuffer', timeout: 15000 });
+  const directUrl = convertDriveLink(url);
+  const response = await axios.get(directUrl, { 
+    responseType: 'arraybuffer', 
+    timeout: 15000,
+    maxRedirects: 5,
+    headers: { 'User-Agent': 'Mozilla/5.0' }
+  });
   const buffer = Buffer.from(response.data);
-  const filename = url.split('/').pop().split('?')[0] || 'cv.pdf';
-  const cleanName = filename.length > 5 ? filename : 'cv.pdf';
-  return { file: buffer.toString('base64'), filename: cleanName };
+  const filename = url.includes('drive.google') ? 'cv.pdf' : (url.split('/').pop().split('?')[0] || 'cv.pdf');
+  return { file: buffer.toString('base64'), filename };
 }
 
 async function callBackend(endpoint, body) {
@@ -188,6 +201,7 @@ agent.addCommand('/coverletter', async ({ roomId }) => {
 
 app.post('/webhook', async (req, res) => {
   res.status(200).send('OK');
+  console.log('[ETHV] RAW:', JSON.stringify(req.body).substring(0, 500));
   try {
     const payload = req.body;
     if (payload?.challenge) return;

@@ -198,7 +198,10 @@ agent.addCommand('/coverletter', async ({ roomId }) => {
 });
 
 // ── Webhook ───────────────────────────────────────────────────────────────────
-
+app.post('/webhook-debug', (req, res) => {
+  console.log('[DEBUG] body:', JSON.stringify(req.body));
+  res.status(200).send('OK');
+});
 app.post('/webhook', async (req, res) => {
   res.status(200).send('OK');
   console.log('[ETHV] RAW FULL:', JSON.stringify(req.body));

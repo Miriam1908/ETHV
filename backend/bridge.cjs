@@ -41,8 +41,17 @@ async function downloadFile(url) {
   return { file: buffer.toString('base64'), filename };
 }
 
+async function wakeBackend() {
+  try {
+    await axios.get(BACKEND_URL + '/health', { timeout: 30000 });
+    await new Promise(function(r) { setTimeout(r, 2000); });
+  } catch(e) {
+    await new Promise(function(r) { setTimeout(r, 3000); });
+  }
+}
+
 async function callBackend(endpoint, body) {
-  const response = await axios.post(BACKEND_URL + endpoint, body, { timeout: 60000 });
+  const response = await axios.post(BACKEND_URL + endpoint, body, { timeout: 90000 });
   return response.data;
 }
 
@@ -51,18 +60,15 @@ function formatAnalysis(data) {
   const score = data.overall_score != null ? data.overall_score : '-';
   const level = data.level || '-';
   const roles = data.suggested_roles ? data.suggested_roles.map(function(r) { return r.title || r; }).slice(0, 3).join(', ') : '-';
-  return 'Analisis de CV completado\n\nNombre: ' + (data.name || 'No detectado') + '\nUbicacion: ' + (data.location || '-') + '\nPuesto: ' + (data.current_position || '-') + ' @ ' + (data.company || '-') + '\n\nScore: ' + score + '/100 - Nivel: ' + level + '\nRoles: ' + roles + '\nSkills: ' + skills + '\n\n---\nEscribe /optimizar para CV optimizado ATS\nEscribe /coverletter para carta de presentacion';
+  const strengths = data.strengths ? data.strengths.slice(0, 2).join(' / ') : '-';
+  const improvements = data.improvements ? data.improvements.slice(0, 2).join(' / ') : '-';
+  return 'Analisis de CV completado\n\nNombre: ' + (data.name || 'No detectado') + '\nUbicacion: ' + (data.location || '-') + '\nPuesto: ' + (data.current_position || '-') + ' @ ' + (data.company || '-') + '\n\nScore: ' + score + '/100 - Nivel: ' + level + '\nRoles sugeridos: ' + roles + '\nSkills: ' + skills + '\n\nFortalezas: ' + strengths + '\nMejoras: ' + improvements + '\n\n---\nEscribe /optimizar para CV optimizado ATS\nEscribe /coverletter para carta de presentacion';
 }
 
 function formatOptimized(data) {
   const score = data.ats_score != null ? data.ats_score : '-';
   const summary = data.professional_summary || data.summary || '-';
   return 'CV Optimizado ATS generado\n\nATS Score: ' + score + '/100\n\nResumen:\n' + summary.substring(0, 300) + '...\n\nVisita https://ethv-1.onrender.com para descargarlo.';
-}
-
-function formatCoverLetter(data) {
-  const letter = data.cover_letter || data.content || JSON.stringify(data);
-  return 'Carta de Presentacion generada\n\n' + letter.substring(0, 600) + '...\n\nCompleta en https://ethv-1.onrender.com';
 }
 
 async function askGroq(message) {
@@ -100,6 +106,7 @@ async function send(agent, isChannel, roomId, chatId, msg) {
     await agent.sendConnectionMessage(chatId || roomId, msg);
   }
 }
+
 app.post('/webhook', async function(req, res) {
   res.status(200).send('OK');
   try {
@@ -112,31 +119,18 @@ app.post('/webhook', async function(req, res) {
     const roomId = payload && payload.roomId;
     const chatId = payload && payload.chatId;
 
-    if (payload.fileKey) console.log('[ETHV] FILE:', JSON.stringify({fileKey: payload.fileKey, fileMime: payload.fileMime, fileSize: payload.fileSize}));
+    if (payload.fileKey) console.log('[ETHV] FILE:', JSON.stringify({fileKey: payload.fileKey, fileMime: payload.fileMime}));
     console.log('[ETHV] msg:', text ? text.substring(0, 80) : '', '| channel:', isChannel, '| room:', roomId);
-if (payload.fileKey && payload.fileMime === 'application/pdf') {
-  await send(agent, isChannel, roomId, chatId, 'Descargando tu CV adjunto...');
-  try {
-    const fileUrl = 'https://content.superdapp.ai/' + payload.fileKey;
-    const dl = await axios.get(fileUrl, {
-      responseType: 'arraybuffer',
-      timeout: 20000,
-      headers: { 'Authorization': 'Bearer ' + API_TOKEN }
-    });
-    const file = Buffer.from(dl.data).toString('base64');
-    const result = await callBackend('/api/analyze-cv', { file, filename: 'cv.pdf' });
-    sessions.set(roomId, { cvData: result, timestamp: Date.now() });
-    await send(agent, isChannel, roomId, chatId, formatAnalysis(result));
-  } catch(e) {
-    console.error('[ETHV] File download error:', e.message);
-    await send(agent, isChannel, roomId, chatId, 'No pude descargar el archivo. Intenta con un link de Google Drive.');
-  }
-  return;
-}
+
     if (!text || isBot) return;
 
+    if (payload.fileKey && payload.fileMime === 'application/pdf') {
+      await send(agent, isChannel, roomId, chatId, 'Archivo recibido. Por ahora usa el link de Google Drive para analizar tu CV.');
+      return;
+    }
+
     if (text === '/start' || text === '/hola') {
-      const texto = 'Hola! Soy ETHV, tu asistente de validacion de talento Web3.\n\nPuedo hacer:\n- Analizar tu CV: manda el link (PDF/DOCX de Google Drive)\n- /optimizar: CV optimizado ATS\n- /coverletter: carta de presentacion\n\nMandame el link de tu CV para empezar!';
+      const texto = 'Hola! Soy ETHV, tu asistente de validacion de talento Web3.\n\nPuedo hacer:\n- Analizar tu CV: manda el link de Google Drive (PDF/DOCX)\n- /optimizar: CV optimizado ATS\n- /coverletter: carta de presentacion\n\nMandame el link de tu CV para empezar!';
       await send(agent, isChannel, roomId, chatId, texto);
       return;
     }
@@ -152,13 +146,12 @@ if (payload.fileKey && payload.fileMime === 'application/pdf') {
         const result = await callBackend('/api/improve-cv', { cvData: session.cvData, lang: 'es' });
         await send(agent, isChannel, roomId, chatId, formatOptimized(result));
       } catch(e) {
-        await send(agent, isChannel, roomId, chatId, 'Error al optimizar. Intenta de nuevo.');
+        await send(agent, isChannel, roomId, chatId, 'Error al optimizar. Intenta de nuevo en unos segundos.');
       }
       return;
     }
 
-    
-     if (text === '/coverletter') {
+    if (text === '/coverletter') {
       const session = sessions.get(roomId);
       if (!session || !session.cvData) {
         await send(agent, isChannel, roomId, chatId, 'Primero analiza tu CV. Mandame el link de tu CV (PDF/DOCX).');
@@ -188,19 +181,20 @@ if (payload.fileKey && payload.fileMime === 'application/pdf') {
     );
 
     if (looksLikeCV) {
-      await send(agent, isChannel, roomId, chatId, 'Descargando y analizando tu CV... espera un momento.');
+      await send(agent, isChannel, roomId, chatId, 'Descargando y analizando tu CV... puede tardar hasta 60 segundos.');
       try {
+        await wakeBackend();
         const dl = await downloadFile(link);
         const result = await callBackend('/api/analyze-cv', { file: dl.file, filename: dl.filename });
         if (!result || !result.name) {
-  await send(agent, isChannel, roomId, chatId, 'El backend esta procesando, intenta de nuevo en 30 segundos.');
-  return;
-}
-sessions.set(roomId, { cvData: result, timestamp: Date.now() });
-await send(agent, isChannel, roomId, chatId, formatAnalysis(result));
+          await send(agent, isChannel, roomId, chatId, 'El backend esta iniciando. Intenta de nuevo en 30 segundos.');
+          return;
+        }
+        sessions.set(roomId, { cvData: result, timestamp: Date.now() });
+        await send(agent, isChannel, roomId, chatId, formatAnalysis(result));
       } catch(e) {
         console.error('[ETHV] CV error:', e.message);
-        await send(agent, isChannel, roomId, chatId, 'No pude analizar ese archivo. Asegurate que el link sea publico y directo al archivo (PDF, DOCX o TXT).');
+        await send(agent, isChannel, roomId, chatId, 'No pude analizar el CV. El servidor puede estar iniciando, intenta de nuevo en 30 segundos.');
       }
       return;
     }
@@ -213,5 +207,5 @@ await send(agent, isChannel, roomId, chatId, formatAnalysis(result));
   }
 });
 
-app.get('/health', function(req, res) { res.json({ status: 'ok', version: 'cv-v4', sessions: sessions.size }); });
+app.get('/health', function(req, res) { res.json({ status: 'ok', version: 'cv-v5', sessions: sessions.size }); });
 app.listen(PORT, function() { console.log('[ETHV] Puerto', PORT, 'listo'); });

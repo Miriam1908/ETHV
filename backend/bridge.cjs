@@ -261,4 +261,7 @@ app.post('/webhook', async function(req, res) {
 });
 
 app.get('/health', function(req, res) { res.json({ status: 'ok', version: 'cv-v6', sessions: sessions.size }); });
+setInterval(function() {
+  axios.get(BACKEND_URL + '/health').catch(function() {});
+}, 14 * 60 * 1000);
 app.listen(PORT, function() { console.log('[ETHV] Puerto', PORT, 'listo'); });

@@ -199,6 +199,7 @@ app.post('/webhook', async function(req, res) {
       await send(agent, isChannel, roomId, chatId, 'Generando quiz de ' + skill + '... espera un momento.');
       try {
         const result = await callBackend('/api/generate-quiz', { skill: skill, level: 'mid', lang: 'es' });
+        console.log('[ETHV] quiz result:', JSON.stringify(result).substring(0, 300));
         const questions = result.questions || [];
         if (!questions.length) {
           await send(agent, isChannel, roomId, chatId, 'No pude generar el quiz. Intenta de nuevo.');

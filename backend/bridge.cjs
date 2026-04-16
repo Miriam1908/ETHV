@@ -168,7 +168,32 @@ app.post('/webhook', async function(req, res) {
       }
       return;
     }
-
+if (text.startsWith('/skills')) {
+      const skill = text.replace('/skills', '').trim();
+      if (!skill) {
+        await send(agent, isChannel, roomId, chatId, 'Escribe el skill que quieres validar.\nEjemplo: /skills SolidWorks');
+        return;
+      }
+      await send(agent, isChannel, roomId, chatId, 'Generando quiz de ' + skill + '... espera un momento.');
+      try {
+        const result = await callBackend('/api/generate-quiz', { skill: skill, level: 'mid', lang: 'es' });
+        const questions = result.questions || [];
+        if (!questions.length) {
+          await send(agent, isChannel, roomId, chatId, 'No pude generar el quiz. Intenta de nuevo.');
+          return;
+        }
+        sessions.set(roomId + '_quiz', { skill, questions, current: 0, answers: [] });
+        const q = questions[0];
+        let msg = 'Quiz de ' + skill + ' - Pregunta 1/' + questions.length + '\n\n' + q.question;
+        if (q.options) {
+          msg += '\n\n' + q.options.map(function(o, i) { return (i+1) + '. ' + o; }).join('\n');
+        }
+        await send(agent, isChannel, roomId, chatId, msg);
+      } catch(e) {
+        await send(agent, isChannel, roomId, chatId, 'Error al generar quiz. Intenta de nuevo.');
+      }
+      return;
+    }
     const link = extractLink(text);
     const looksLikeCV = link && (
       link.includes('.pdf') ||

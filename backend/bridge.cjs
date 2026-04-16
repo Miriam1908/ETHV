@@ -130,7 +130,7 @@ app.post('/webhook', async function(req, res) {
     }
 
     if (text === '/start' || text === '/hola') {
-      const texto = 'Hola! Soy ETHV, tu asistente de validacion de talento Web3.\n\nPuedo hacer:\n- Analizar tu CV: manda el link de Google Drive (PDF/DOCX)\n- /optimizar: CV optimizado ATS\n- /coverletter: carta de presentacion\n\nMandame el link de tu CV para empezar!';
+      const texto = 'Hola! Soy ETHV, tu asistente de validacion de talento Web3.\n\nPuedo hacer:\n- Analizar tu CV: manda el link de Google Drive (PDF/DOCX)\n- /optimizar: CV optimizado ATS\n- /coverletter: carta de presentacion\n- /skills [skill]: valida un skill con quiz\n  Ejemplo: /skills SolidWorks\n\nMandame el link de tu CV para empezar!';
       await send(agent, isChannel, roomId, chatId, texto);
       return;
     }
@@ -168,12 +168,12 @@ app.post('/webhook', async function(req, res) {
       }
       return;
     }
+
     const quizSession = sessions.get(roomId + '_quiz');
     if (quizSession && !text.startsWith('/')) {
       const answer = text.trim();
       quizSession.answers.push(answer);
       quizSession.current++;
-      
       if (quizSession.current < quizSession.questions.length) {
         const q = quizSession.questions[quizSession.current];
         let msg = 'Pregunta ' + (quizSession.current + 1) + '/' + quizSession.questions.length + '\n\n' + q.question;
@@ -189,7 +189,8 @@ app.post('/webhook', async function(req, res) {
       }
       return;
     }
-if (text.startsWith('/skills')) {
+
+    if (text.startsWith('/skills')) {
       const skill = text.replace('/skills', '').trim();
       if (!skill) {
         await send(agent, isChannel, roomId, chatId, 'Escribe el skill que quieres validar.\nEjemplo: /skills SolidWorks');
@@ -215,6 +216,7 @@ if (text.startsWith('/skills')) {
       }
       return;
     }
+
     const link = extractLink(text);
     const looksLikeCV = link && (
       link.includes('.pdf') ||
@@ -238,6 +240,10 @@ if (text.startsWith('/skills')) {
         }
         sessions.set(roomId, { cvData: result, timestamp: Date.now() });
         await send(agent, isChannel, roomId, chatId, formatAnalysis(result));
+        const skillsList = result.skills ? result.skills.slice(0, 5).join(', ') : '';
+        if (skillsList) {
+          await send(agent, isChannel, roomId, chatId, 'Tus skills detectados: ' + skillsList + '\n\nEscribe /skills [nombre] para validar uno.\nEjemplo: /skills ' + (result.skills[0] || 'SolidWorks'));
+        }
       } catch(e) {
         console.error('[ETHV] CV error:', e.message);
         await send(agent, isChannel, roomId, chatId, 'No pude analizar el CV. El servidor puede estar iniciando, intenta de nuevo en 30 segundos.');
@@ -253,5 +259,5 @@ if (text.startsWith('/skills')) {
   }
 });
 
-app.get('/health', function(req, res) { res.json({ status: 'ok', version: 'cv-v5', sessions: sessions.size }); });
+app.get('/health', function(req, res) { res.json({ status: 'ok', version: 'cv-v6', sessions: sessions.size }); });
 app.listen(PORT, function() { console.log('[ETHV] Puerto', PORT, 'listo'); });

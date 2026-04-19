@@ -7,6 +7,7 @@ const API_TOKEN = process.env.SUPERDAPP_TOKEN || '';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const BACKEND_URL = process.env.BACKEND_URL || 'https://ethv.onrender.com';
 const PORT = process.env.BRIDGE_PORT || 3004;
+const MAX_TOOL_ROUNDS = 5;
 
 console.log('[ETHV] TOKEN:', API_TOKEN ? 'OK' : 'FALTA');
 console.log('[ETHV] GROQ:', GROQ_API_KEY ? 'OK' : 'FALTA');
@@ -15,21 +16,96 @@ const agent = new SuperDappAgent({ apiToken: API_TOKEN, baseUrl: 'https://api.su
 const app = express();
 app.use(express.json());
 
+// ─── Memoria por sesión ───────────────────────────────────────────────────────
+// sessions[roomId] = { cvData, history: [{role, content}], quizState }
 const sessions = new Map();
 
-function extractLink(text) {
-  const match = text.match(/https?:\/\/[^\s]+/);
-  return match ? match[0] : null;
+function getSession(roomId) {
+  if (!sessions.has(roomId)) {
+    sessions.set(roomId, { cvData: null, history: [], quizState: null });
+  }
+  return sessions.get(roomId);
 }
 
-function convertDriveLink(url) {
+// ─── Tools disponibles para el LLM ───────────────────────────────────────────
+const TOOLS = [
+  {
+    type: 'function',
+    function: {
+      name: 'analyze_cv',
+      description: 'Descarga y analiza un CV desde una URL (Google Drive, Dropbox, link directo a PDF/DOCX). Devuelve nombre, skills, score, roles sugeridos, fortalezas y mejoras.',
+      parameters: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'URL del archivo CV (PDF o DOCX)' }
+        },
+        required: ['url']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'optimize_cv',
+      description: 'Genera un CV optimizado para ATS basado en el CV previamente analizado del usuario.',
+      parameters: {
+        type: 'object',
+        properties: {
+          lang: { type: 'string', description: 'Idioma del CV: es o en', enum: ['es', 'en'] }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'generate_cover_letter',
+      description: 'Genera una carta de presentación profesional basada en el CV del usuario.',
+      parameters: {
+        type: 'object',
+        properties: {
+          job_title: { type: 'string', description: 'Puesto al que aplica (opcional)' },
+          company: { type: 'string', description: 'Empresa destino (opcional)' }
+        },
+        required: []
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'start_skill_quiz',
+      description: 'Inicia un quiz de validación de un skill técnico específico.',
+      parameters: {
+        type: 'object',
+        properties: {
+          skill: { type: 'string', description: 'Nombre del skill a evaluar (ej: SolidWorks, Solidity, React)' },
+          level: { type: 'string', description: 'Nivel del quiz', enum: ['junior', 'mid', 'senior'], default: 'mid' }
+        },
+        required: ['skill']
+      }
+    }
+  },
+  {
+    type: 'function',
+    function: {
+      name: 'get_user_profile',
+      description: 'Obtiene el perfil y datos del CV del usuario actual si fue analizado previamente.',
+      parameters: { type: 'object', properties: {} }
+    }
+  }
+];
+
+// ─── Implementación de las tools ──────────────────────────────────────────────
+async function convertDriveLink(url) {
   const match = url.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
   if (match) return 'https://drive.google.com/uc?export=download&confirm=t&id=' + match[1];
   return url;
 }
 
 async function downloadFile(url) {
-  const directUrl = convertDriveLink(url);
+  const directUrl = await convertDriveLink(url);
   const response = await axios.get(directUrl, {
     responseType: 'arraybuffer',
     timeout: 20000,
@@ -55,42 +131,148 @@ async function callBackend(endpoint, body) {
   return response.data;
 }
 
-function formatAnalysis(data) {
-  const skills = data.skills ? data.skills.slice(0, 6).join(', ') : '-';
-  const score = data.overall_score != null ? data.overall_score : '-';
-  const level = data.level || '-';
-  const roles = data.suggested_roles ? data.suggested_roles.map(function(r) { return r.title || r; }).slice(0, 3).join(', ') : '-';
-  const strengths = data.strengths ? data.strengths.slice(0, 2).join(' / ') : '-';
-  const improvements = data.improvements ? data.improvements.slice(0, 2).join(' / ') : '-';
-  return 'Analisis de CV completado\n\nNombre: ' + (data.name || 'No detectado') + '\nUbicacion: ' + (data.location || '-') + '\nPuesto: ' + (data.current_position || '-') + ' @ ' + (data.company || '-') + '\n\nScore: ' + score + '/100 - Nivel: ' + level + '\nRoles sugeridos: ' + roles + '\nSkills: ' + skills + '\n\nFortalezas: ' + strengths + '\nMejoras: ' + improvements + '\n\n---\nEscribe /optimizar para CV optimizado ATS\nEscribe /coverletter para carta de presentacion';
+async function executeTool(toolName, args, session) {
+  console.log('[TOOL]', toolName, JSON.stringify(args));
+
+  if (toolName === 'analyze_cv') {
+    await wakeBackend();
+    const dl = await downloadFile(args.url);
+    const result = await callBackend('/api/analyze-cv', { file: dl.file, filename: dl.filename });
+    session.cvData = result;
+    return JSON.stringify({
+      name: result.name,
+      location: result.location,
+      current_position: result.current_position,
+      company: result.company,
+      skills: result.skills,
+      experience_years: result.experience_years,
+      score: result.overall_score,
+      level: result.level,
+      suggested_roles: result.suggested_roles,
+      strengths: result.strengths,
+      improvements: result.improvements,
+      web3_relevance: result.web3_relevance
+    });
+  }
+
+  if (toolName === 'optimize_cv') {
+    if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado. Primero analiza tu CV.' });
+    const result = await callBackend('/api/improve-cv', { cvData: session.cvData, lang: args.lang || 'es' });
+    return JSON.stringify({
+      ats_score: result.ats_score,
+      professional_summary: result.professional_summary || result.summary,
+      optimized_skills: result.skills,
+      improvements_applied: result.improvements_applied
+    });
+  }
+
+  if (toolName === 'generate_cover_letter') {
+    if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado. Primero analiza tu CV.' });
+    const cv = session.cvData;
+    const target = args.job_title ? ' para el puesto de ' + args.job_title : '';
+    const company = args.company ? ' en ' + args.company : '';
+    const prompt = 'Genera una carta de presentacion profesional en espanol' + target + company + ' para ' + (cv.name || 'el candidato') + ', ' + (cv.current_position || 'profesional') + ' con ' + (cv.experience_years || '') + ' años de experiencia. Skills principales: ' + (cv.skills || []).slice(0, 5).join(', ') + '. Ubicacion: ' + (cv.location || 'Peru') + '. La carta debe ser formal, de 3 parrafos, lista para enviar a un reclutador. Solo devuelve la carta, sin explicaciones.';
+    const response = await axios.post(
+      'https://api.groq.com/openai/v1/chat/completions',
+      { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: prompt }], max_tokens: 600 },
+      { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
+    );
+    return JSON.stringify({ cover_letter: response.data.choices[0].message.content });
+  }
+
+  if (toolName === 'start_skill_quiz') {
+    const result = await callBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es' });
+    const questions = result.questions || [];
+    if (!questions.length) return JSON.stringify({ error: 'No se pudo generar el quiz.' });
+    session.quizState = { skill: args.skill, questions, current: 0, answers: [] };
+    const q = questions[0];
+    return JSON.stringify({
+      quiz_started: true,
+      skill: args.skill,
+      total_questions: questions.length,
+      first_question: q.question,
+      options: q.options || null
+    });
+  }
+
+  if (toolName === 'get_user_profile') {
+    if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado aún.' });
+    return JSON.stringify(session.cvData);
+  }
+
+  return JSON.stringify({ error: 'Tool desconocida: ' + toolName });
 }
 
-function formatOptimized(data) {
-  const score = data.ats_score != null ? data.ats_score : '-';
-  const summary = data.professional_summary || data.summary || '-';
-  return 'CV Optimizado ATS generado\n\nATS Score: ' + score + '/100\n\nResumen:\n' + summary.substring(0, 300) + '...\n\nVisita https://ethv-1.onrender.com para descargarlo.';
-}
+// ─── Loop del agente (ReAct) ─────────────────────────────────────────────────
+async function runAgent(userMessage, session) {
+  // Actualizar historial
+  session.history.push({ role: 'user', content: userMessage });
 
-async function askGroq(message) {
-  try {
-    const r = await axios.post(
+  // Limitar historial a últimas 10 turns para no saturar el contexto
+  if (session.history.length > 20) {
+    session.history = session.history.slice(-20);
+  }
+
+  const systemPrompt = 'Eres ETHV, un agente inteligente de validacion de talento Web3. Ayudas a profesionales a analizar su CV, validar sus skills y encontrar oportunidades en el ecosistema blockchain/Web3.\n\nTienes acceso a herramientas reales. Cuando el usuario te pida algo que requiera una herramienta, USALA en lugar de inventar respuestas.\n\nReglas:\n- Si el usuario manda un link que parece un CV (Google Drive, PDF, DOCX), llama analyze_cv automaticamente.\n- Si el usuario pide optimizar su CV, llama optimize_cv.\n- Si el usuario pide carta de presentacion, llama generate_cover_letter.\n- Si el usuario quiere validar un skill, llama start_skill_quiz.\n- Responde siempre en español, de forma breve y util.\n- Cuando devuelvas resultados de tools, presendalos de forma clara y estructurada.';
+
+  const messages = [
+    { role: 'system', content: systemPrompt },
+    ...session.history
+  ];
+
+  let rounds = 0;
+  while (rounds < MAX_TOOL_ROUNDS) {
+    rounds++;
+    const response = await axios.post(
       'https://api.groq.com/openai/v1/chat/completions',
       {
         model: 'llama-3.3-70b-versatile',
-        messages: [
-          { role: 'system', content: 'Eres ETHV, asistente de validacion de talento Web3. Ayudas a mejorar CVs, validar skills y encontrar oportunidades. Responde en espanol, breve y util.' },
-          { role: 'user', content: message }
-        ],
-        max_tokens: 400
+        messages,
+        tools: TOOLS,
+        tool_choice: 'auto',
+        max_tokens: 800
       },
       { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
     );
-    return r.data.choices[0].message.content;
-  } catch(e) {
-    return 'Error al procesar. Intenta de nuevo.';
+
+    const choice = response.data.choices[0];
+    const assistantMsg = choice.message;
+    messages.push(assistantMsg);
+
+    // Si el LLM no pide tools → respuesta final
+    if (choice.finish_reason !== 'tool_calls' || !assistantMsg.tool_calls) {
+      const finalText = assistantMsg.content || 'Listo!';
+      session.history.push({ role: 'assistant', content: finalText });
+      return finalText;
+    }
+
+    // Ejecutar cada tool que pidió el LLM
+    for (const toolCall of assistantMsg.tool_calls) {
+      const toolName = toolCall.function.name;
+      let args = {};
+      try { args = JSON.parse(toolCall.function.arguments); } catch(e) {}
+
+      let toolResult;
+      try {
+        toolResult = await executeTool(toolName, args, session);
+      } catch(e) {
+        console.error('[TOOL ERROR]', toolName, e.message);
+        toolResult = JSON.stringify({ error: e.message });
+      }
+
+      messages.push({
+        role: 'tool',
+        tool_call_id: toolCall.id,
+        content: toolResult
+      });
+    }
+    // Siguiente iteración: el LLM ve los resultados y decide si necesita más tools o responde
   }
+
+  return 'Lo siento, no pude completar la acción. Intenta de nuevo.';
 }
 
+// ─── Procesamiento de mensajes ────────────────────────────────────────────────
 function extractText(payload) {
   try {
     const p = JSON.parse(payload.body);
@@ -99,7 +281,7 @@ function extractText(payload) {
   } catch(e) { return ''; }
 }
 
-async function send(agent, isChannel, roomId, chatId, msg) {
+async function send(isChannel, roomId, chatId, msg) {
   if (isChannel) {
     await agent.sendChannelMessage(roomId, msg);
   } else {
@@ -119,149 +301,57 @@ app.post('/webhook', async function(req, res) {
     const roomId = payload && payload.roomId;
     const chatId = payload && payload.chatId;
 
-    if (payload.fileKey) console.log('[ETHV] FILE:', JSON.stringify({fileKey: payload.fileKey, fileMime: payload.fileMime}));
     console.log('[ETHV] msg:', text ? text.substring(0, 80) : '', '| channel:', isChannel, '| room:', roomId);
 
     if (!text || isBot) return;
 
-    if (payload.fileKey && payload.fileMime === 'application/pdf') {
-      await send(agent, isChannel, roomId, chatId, 'Archivo recibido. Por ahora usa el link de Google Drive para analizar tu CV.');
-      return;
-    }
+    const session = getSession(roomId);
 
-    if (text === '/start' || text === '/hola') {
-      const texto = 'Hola! Soy ETHV, tu asistente de validacion de talento Web3.\n\nPuedo hacer:\n- Analizar tu CV: manda el link de Google Drive (PDF/DOCX)\n- /optimizar: CV optimizado ATS\n- /coverletter: carta de presentacion\n- /skills [skill]: valida un skill con quiz\n  Ejemplo: /skills SolidWorks\n\nMandame el link de tu CV para empezar!';
-      await send(agent, isChannel, roomId, chatId, texto);
-      return;
-    }
+    // Si hay un quiz activo, procesar respuesta
+    if (session.quizState && !text.startsWith('/')) {
+      const quiz = session.quizState;
+      quiz.answers.push(text.trim());
+      quiz.current++;
 
-    if (text === '/optimizar') {
-      const session = sessions.get(roomId);
-      if (!session || !session.cvData) {
-        await send(agent, isChannel, roomId, chatId, 'Primero analiza tu CV. Mandame el link de tu CV (PDF/DOCX).');
-        return;
-      }
-      await send(agent, isChannel, roomId, chatId, 'Generando CV optimizado ATS...');
-      try {
-        const result = await callBackend('/api/improve-cv', { cvData: session.cvData, lang: 'es' });
-        await send(agent, isChannel, roomId, chatId, formatOptimized(result));
-      } catch(e) {
-        await send(agent, isChannel, roomId, chatId, 'Error al optimizar. Intenta de nuevo en unos segundos.');
-      }
-      return;
-    }
-
-    if (text === '/coverletter') {
-      const session = sessions.get(roomId);
-      if (!session || !session.cvData) {
-        await send(agent, isChannel, roomId, chatId, 'Primero analiza tu CV. Mandame el link de tu CV (PDF/DOCX).');
-        return;
-      }
-      await send(agent, isChannel, roomId, chatId, 'Generando carta de presentacion...');
-      try {
-        const cv = session.cvData;
-        const prompt = 'Genera una carta de presentacion profesional en espanol para ' + (cv.name || 'el candidato') + ', que trabaja como ' + (cv.current_position || 'profesional') + ' con skills en ' + (cv.skills || []).slice(0,5).join(', ') + '. Ubicacion: ' + (cv.location || 'Peru') + '. La carta debe ser formal, de 3 parrafos, lista para enviar a un reclutador.';
-        const carta = await askGroq(prompt);
-        await send(agent, isChannel, roomId, chatId, 'Carta de Presentacion:\n\n' + carta);
-      } catch(e) {
-        await send(agent, isChannel, roomId, chatId, 'Error al generar carta. Intenta de nuevo.');
-      }
-      return;
-    }
-
-    const quizSession = sessions.get(roomId + '_quiz');
-    if (quizSession && !text.startsWith('/')) {
-      const answer = text.trim();
-      quizSession.answers.push(answer);
-      quizSession.current++;
-      if (quizSession.current < quizSession.questions.length) {
-        const q = quizSession.questions[quizSession.current];
-        let msg = 'Pregunta ' + (quizSession.current + 1) + '/' + quizSession.questions.length + '\n\n' + q.question;
-        if (q.options) {
-          msg += '\n\n' + q.options.map(function(o, i) { return (i+1) + '. ' + o; }).join('\n');
-        }
-        await send(agent, isChannel, roomId, chatId, msg);
+      if (quiz.current < quiz.questions.length) {
+        const q = quiz.questions[quiz.current];
+        let msg = 'Pregunta ' + (quiz.current + 1) + '/' + quiz.questions.length + '\n\n' + q.question;
+        if (q.options) msg += '\n\n' + q.options.map(function(o, i) { return (i+1) + '. ' + o; }).join('\n');
+        await send(isChannel, roomId, chatId, msg);
       } else {
-        sessions.delete(roomId + '_quiz');
-        const prompt = 'El usuario respondio un quiz de ' + quizSession.skill + ' con estas respuestas: ' + JSON.stringify(quizSession.answers) + '. Las preguntas fueron: ' + JSON.stringify(quizSession.questions.map(function(q) { return q.question; })) + '. Da una evaluacion breve en espanol: nivel detectado, que sabes bien y que mejorar.';
-        const eval_ = await askGroq(prompt);
-        await send(agent, isChannel, roomId, chatId, 'Quiz completado!\n\n' + eval_);
+        // Quiz terminado — el agente evalúa las respuestas
+        const quizSummary = 'El usuario completó el quiz de ' + quiz.skill + '. Preguntas: ' + JSON.stringify(quiz.questions.map(function(q) { return q.question; })) + '. Respuestas del usuario: ' + JSON.stringify(quiz.answers) + '. Evalúa su nivel, qué sabe bien y qué debe mejorar.';
+        session.quizState = null;
+        const evaluation = await runAgent(quizSummary, session);
+        await send(isChannel, roomId, chatId, 'Quiz completado!\n\n' + evaluation);
       }
       return;
     }
 
-    if (text.startsWith('/skills')) {
-      const skill = text.replace('/skills', '').trim();
-      if (!skill) {
-        await send(agent, isChannel, roomId, chatId, 'Escribe el skill que quieres validar.\nEjemplo: /skills SolidWorks');
-        return;
-      }
-      await send(agent, isChannel, roomId, chatId, 'Generando quiz de ' + skill + '... espera un momento.');
-      try {
-        const result = await callBackend('/api/generate-quiz', { skill: skill, level: 'mid', lang: 'es' });
-        console.log('[ETHV] quiz result:', JSON.stringify(result).substring(0, 300));
-        const questions = result.questions || [];
-        if (!questions.length) {
-          await send(agent, isChannel, roomId, chatId, 'No pude generar el quiz. Intenta de nuevo.');
-          return;
-        }
-        sessions.set(roomId + '_quiz', { skill, questions, current: 0, answers: [] });
-        const q = questions[0];
-        let msg = 'Quiz de ' + skill + ' - Pregunta 1/' + questions.length + '\n\n' + q.question;
-        if (q.options) {
-          msg += '\n\n' + q.options.map(function(o, i) { return (i+1) + '. ' + o; }).join('\n');
-        }
-        await send(agent, isChannel, roomId, chatId, msg);
-      } catch(e) {
-        await send(agent, isChannel, roomId, chatId, 'Error al generar quiz. Intenta de nuevo.');
-      }
-      return;
+    // Agente maneja el mensaje con tool calling
+    const reply = await runAgent(text, session);
+    await send(isChannel, roomId, chatId, reply);
+
+    // Si el agente inició un quiz, enviar la primera pregunta
+    if (session.quizState && session.quizState.current === 0) {
+      const q = session.quizState.questions[0];
+      let msg = 'Pregunta 1/' + session.quizState.questions.length + '\n\n' + q.question;
+      if (q.options) msg += '\n\n' + q.options.map(function(o, i) { return (i+1) + '. ' + o; }).join('\n');
+      await send(isChannel, roomId, chatId, msg);
     }
-
-    const link = extractLink(text);
-    const looksLikeCV = link && (
-      link.includes('.pdf') ||
-      link.includes('.docx') ||
-      link.includes('drive.google') ||
-      link.includes('dropbox') ||
-      text.toLowerCase().includes('cv') ||
-      text.toLowerCase().includes('curriculum') ||
-      text.toLowerCase().includes('analiz')
-    );
-
-    if (looksLikeCV) {
-      await send(agent, isChannel, roomId, chatId, 'Descargando y analizando tu CV... puede tardar hasta 60 segundos.');
-      try {
-        await wakeBackend();
-        const dl = await downloadFile(link);
-        const result = await callBackend('/api/analyze-cv', { file: dl.file, filename: dl.filename });
-        if (!result || !result.name) {
-          await send(agent, isChannel, roomId, chatId, 'El backend esta iniciando. Intenta de nuevo en 30 segundos.');
-          return;
-        }
-        sessions.set(roomId, { cvData: result, timestamp: Date.now() });
-        await send(agent, isChannel, roomId, chatId, formatAnalysis(result));
-        const skillsList = result.skills ? result.skills.slice(0, 5).join(', ') : '';
-        if (skillsList) {
-          await send(agent, isChannel, roomId, chatId, 'Tus skills detectados: ' + skillsList + '\n\nEscribe /skills [nombre] para validar uno.\nEjemplo: /skills ' + (result.skills[0] || 'SolidWorks'));
-        }
-      } catch(e) {
-        console.error('[ETHV] CV error:', e.message);
-        await send(agent, isChannel, roomId, chatId, 'No pude analizar el CV. El servidor puede estar iniciando, intenta de nuevo en 30 segundos.');
-      }
-      return;
-    }
-
-    const reply = await askGroq(text);
-    await send(agent, isChannel, roomId, chatId, reply);
 
   } catch(e) {
     console.error('[ETHV] Webhook error:', e.message);
   }
 });
 
-app.get('/health', function(req, res) { res.json({ status: 'ok', version: 'cv-v6', sessions: sessions.size }); });
+app.get('/health', function(req, res) {
+  res.json({ status: 'ok', version: 'agent-v1', sessions: sessions.size });
+});
+
+// Keep-alive del backend en Render
 setInterval(function() {
   axios.get(BACKEND_URL + '/health').catch(function() {});
 }, 14 * 60 * 1000);
-app.listen(PORT, function() { console.log('[ETHV] Puerto', PORT, 'listo'); });
+
+app.listen(PORT, function() { console.log('[ETHV] Agente listo en puerto', PORT); });

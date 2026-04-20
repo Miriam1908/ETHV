@@ -185,6 +185,34 @@ swaggerSpec.paths = {
       },
     },
   },
+  '/webhook': {
+    post: {
+      tags: ['SuperDapp'],
+      summary: 'SuperDapp Agent Webhook',
+      description: 'Recibe mensajes de SuperDapp y los procesa con el agente ETHV. El agente usa tool calling (Groq) para analizar CVs, generar quizzes, emitir certificados en blockchain y más. Requiere SUPERDAPP_TOKEN y GROQ_API_KEY en .env.',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                roomId:     { type: 'string', description: 'ID del room/chat' },
+                chatId:     { type: 'string', description: 'ID del chat directo' },
+                isBot:      { type: 'boolean', description: 'Si el mensaje es de un bot (se ignora)' },
+                __typename: { type: 'string', example: 'ChannelMessage', description: 'Tipo de mensaje' },
+                body:       { type: 'string', description: 'Payload codificado del mensaje' },
+                challenge:  { type: 'string', description: 'Challenge de verificación de SuperDapp' },
+              },
+            },
+          },
+        },
+      },
+      responses: {
+        200: { description: 'OK — el agente procesa el mensaje de forma asíncrona' },
+      },
+    },
+  },
   '/v1/chat/completions': {
     post: {
       tags: ['AI'],

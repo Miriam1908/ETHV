@@ -2337,6 +2337,7 @@ async function sdRunAgent(userMessage, session) {
     if (result.provider === 'minimax' || choice.finish_reason !== 'tool_calls' || !assistantMsg.tool_calls) {
       const finalText = assistantMsg.content || 'Listo!';
       session.history.push({ role: 'assistant', content: finalText });
+      console.log('[SD-REPLY] (' + result.provider + '):', finalText.substring(0, 200));
       return finalText;
     }
 

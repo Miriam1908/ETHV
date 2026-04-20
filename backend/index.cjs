@@ -2035,7 +2035,6 @@ app.post('/api/mint-certificate', async (req, res) => {
 // ============================================
 // SUPERDAPP AGENT
 // ============================================
-const { SuperDappAgent } = require('@superdapp/agents');
 const axios = require('axios');
 
 const GROQ_API_KEY    = process.env.GROQ_API_KEY    || '';
@@ -2048,9 +2047,16 @@ const EXPLORER_URL    = 'https://explorer-zk.tanenbaum.io';
 console.log('[SuperDapp] TOKEN:', SUPERDAPP_TOKEN ? 'OK' : 'FALTA');
 console.log('[SuperDapp] GROQ:',  GROQ_API_KEY    ? 'OK' : 'FALTA');
 
-const sdAgent = SUPERDAPP_TOKEN
-  ? new SuperDappAgent({ apiToken: SUPERDAPP_TOKEN, baseUrl: 'https://api.superdapp.ai' })
-  : null;
+// @superdapp/agents es ESM — se carga con import() dinámico para compatibilidad con CJS
+let sdAgent = null;
+if (SUPERDAPP_TOKEN) {
+  import('@superdapp/agents').then(({ SuperDappAgent }) => {
+    sdAgent = new SuperDappAgent({ apiToken: SUPERDAPP_TOKEN, baseUrl: 'https://api.superdapp.ai' });
+    console.log('[SuperDapp] Agente inicializado');
+  }).catch(e => {
+    console.error('[SuperDapp] Error al cargar agente:', e.message);
+  });
+}
 
 // ── Sesiones ──────────────────────────────────────────────────────────────────
 const sdSessions = new Map();

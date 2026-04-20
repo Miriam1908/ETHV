@@ -2214,17 +2214,40 @@ async function sdMintOnChain(walletAddress, skill, score, level, cvData) {
   return { txHash: tx.hash, tokenId, explorerTx: EXPLORER_URL + '/tx/' + tx.hash };
 }
 
+// ── Llamada LLM con fallback automático Groq → MiniMax ───────────────────────
+async function sdCallLLM(messages, { tools, maxTokens = 800, temperature = 0.7 } = {}) {
+  // Intenta Groq si hay key
+  if (GROQ_API_KEY) {
+    try {
+      const body = { model: 'llama-3.3-70b-versatile', messages, max_tokens: maxTokens, temperature };
+      if (tools) { body.tools = tools; body.tool_choice = 'auto'; }
+      const r = await axios.post('https://api.groq.com/openai/v1/chat/completions', body,
+        { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' }, timeout: 30000 }
+      );
+      console.log('[SD-LLM] Groq OK');
+      return { provider: 'groq', data: r.data };
+    } catch(e) {
+      console.warn('[SD-LLM] Groq falló (' + (e.response?.status || e.message) + '), usando MiniMax...');
+    }
+  } else {
+    console.log('[SD-LLM] Sin GROQ_API_KEY, usando MiniMax');
+  }
+
+  // Fallback: MiniMax via callAIMessages (sin tool calling)
+  const userMessages = messages.filter(m => m.role !== 'system');
+  const system = messages.find(m => m.role === 'system')?.content || null;
+  const text = await callAIMessages(userMessages, { maxTokens, system });
+  return { provider: 'minimax', data: { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: text } }] } };
+}
+
 async function sdEvaluateQuiz(skill, questions, answers) {
   const prompt = 'Eres un evaluador técnico. El usuario respondió un quiz de "' + skill + '".\n\n' +
     questions.map((q, i) => (i + 1) + '. ' + q.question + '\n   Respuesta: ' + (answers[i] || '(sin respuesta)')).join('\n') +
     '\n\nDevuelve EXACTAMENTE este JSON (sin markdown):\n{"score":85,"level":"Mid","passed":true,"evaluation":"Evaluación breve en español."}';
 
-  const r    = await axios.post('https://api.groq.com/openai/v1/chat/completions',
-    { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: prompt }], max_tokens: 300, temperature: 0.2 },
-    { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
-  );
-  const text  = r.data.choices[0].message.content.trim();
-  const match = text.match(/\{[\s\S]*\}/);
+  const result = await sdCallLLM([{ role: 'user', content: prompt }], { maxTokens: 300, temperature: 0.2 });
+  const text   = result.data.choices[0].message.content.trim();
+  const match  = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error('Respuesta del evaluador inválida');
   return JSON.parse(match[0]);
 }
@@ -2287,10 +2310,6 @@ async function sdExecuteTool(toolName, args, session) {
 }
 
 async function sdRunAgent(userMessage, session) {
-  if (!GROQ_API_KEY) {
-    return 'Hola! Soy ETHV, tu asistente de talento Web3.\n\nActualmente estoy en mantenimiento — el servicio de IA no está configurado.\n\nContacta al administrador para activar el agente.';
-  }
-
   session.history.push({ role: 'user', content: userMessage });
   if (session.history.length > 20) session.history = session.history.slice(-20);
 
@@ -2301,24 +2320,21 @@ async function sdRunAgent(userMessage, session) {
   let rounds = 0;
   while (rounds < MAX_TOOL_ROUNDS) {
     rounds++;
-    let response;
+    let result;
     try {
-      response = await axios.post('https://api.groq.com/openai/v1/chat/completions',
-        { model: 'llama-3.3-70b-versatile', messages, tools: SD_TOOLS, tool_choice: 'auto', max_tokens: 800 },
-        { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' }, timeout: 30000 }
-      );
+      // sdCallLLM decide automáticamente: Groq (con tools) o MiniMax (sin tools)
+      result = await sdCallLLM(messages, { tools: SD_TOOLS });
     } catch(e) {
-      const status = e.response?.status;
-      if (status === 401) return 'El agente no puede responder ahora mismo — clave de IA inválida. Contacta al administrador.';
-      if (status === 429) return 'Demasiadas solicitudes en este momento. Intenta de nuevo en unos segundos.';
+      console.error('[SD-AGENT] LLM error:', e.message);
       return 'No tengo conexión con el servicio de IA en este momento. Intenta de nuevo en unos minutos.';
     }
 
-    const choice       = response.data.choices[0];
+    const choice       = result.data.choices[0];
     const assistantMsg = choice.message;
     messages.push(assistantMsg);
 
-    if (choice.finish_reason !== 'tool_calls' || !assistantMsg.tool_calls) {
+    // MiniMax no soporta tool calling — responde directo
+    if (result.provider === 'minimax' || choice.finish_reason !== 'tool_calls' || !assistantMsg.tool_calls) {
       const finalText = assistantMsg.content || 'Listo!';
       session.history.push({ role: 'assistant', content: finalText });
       return finalText;

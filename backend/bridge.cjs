@@ -418,6 +418,10 @@ app.post('/webhook', async function(req, res) {
     if (!text || isBot) return;
 
     const session = getSession(roomId);
+    if (text === '/hola' || text === '/start') {
+  await send(isChannel, roomId, chatId, 'Hola! Soy LikeTalent, tu agente de validacion de talento Web3.\n\nPuedo hacer:\n- Manda el link de tu CV (Google Drive / PDF) para analizarlo\n- /optimizar — CV optimizado para ATS\n- /coverletter — carta de presentacion\n- /skills [skill] — valida tu skill con quiz\n  Ejemplo: /skills Solidity\n\nEscribe /hola para ver este menu.');
+  return;
+}
 
     // ── 1. Quiz activo: colectar respuesta ────────────────────────────────────
     if (session.quizState && !text.startsWith('/')) {

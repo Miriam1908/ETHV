@@ -669,29 +669,20 @@ async function extractTextFromFile(fileBuffer, filename) {
     }
   }
 
-  // PDF: extraer texto con pdfjs-dist
+  // PDF: extraer texto con pdf-parse (CJS nativo, sin worker threads)
   if (ext === 'pdf') {
     try {
-      const path = require('path');
-      const { pathToFileURL } = require('url');
-      const { getDocument, GlobalWorkerOptions } = await import('pdfjs-dist/legacy/build/pdf.mjs');
-      const workerSrc = pathToFileURL(path.resolve(__dirname, 'node_modules', 'pdfjs-dist', 'legacy', 'build', 'pdf.worker.mjs')).href;
-      GlobalWorkerOptions.workerSrc = workerSrc;
-
-      const data = new Uint8Array(fileBuffer);
-      const pdf = await getDocument({ data, useSystemFonts: true, disableFontFace: true }).promise;
-      let text = '';
-      for (let i = 1; i <= pdf.numPages; i++) {
-        const page = await pdf.getPage(i);
-        const tc = await page.getTextContent();
-        text += tc.items.map(item => item.str).join(' ') + '\n';
-      }
+      const { PDFParse, VerbosityLevel } = require('pdf-parse');
+      const parser = new PDFParse({ data: fileBuffer, verbosity: VerbosityLevel ? VerbosityLevel.ERRORS : 0 });
+      await parser.load();
+      const result = await parser.getText();
+      const text = result.text || '';
       if (text.trim().length > 20) {
-        console.log('[OCR] pdfjs-dist extrajo', text.length, 'chars,', pdf.numPages, 'páginas');
+        console.log('[OCR] pdf-parse extrajo', text.length, 'chars,', result.total, 'páginas');
         return text;
       }
     } catch (e) {
-      console.log('[OCR] pdfjs-dist falló:', e.message);
+      console.log('[OCR] pdf-parse falló:', e.message);
     }
 
     console.log('[OCR] No se pudo extraer texto del PDF');
@@ -1829,8 +1820,82 @@ const CONTRACT_ABI     = [
 ];
 
 // Build a PDF certificate and return its Buffer
+function formatCertificateTitle(skill) {
+  // Mapeo de skills comunes a nombres profesionales
+  const titleMap = {
+    'gcp': 'Google Cloud Platform',
+    'aws': 'Amazon Web Services',
+    'azure': 'Microsoft Azure',
+    'react': 'React.js Development',
+    'node': 'Node.js Development',
+    'node.js': 'Node.js Development',
+    'nodejs': 'Node.js Development',
+    'solidity': 'Solidity Smart Contracts',
+    'python': 'Python Programming',
+    'java': 'Java Development',
+    'javascript': 'JavaScript Development',
+    'typescript': 'TypeScript Development',
+    'docker': 'Docker & Containerization',
+    'kubernetes': 'Kubernetes Orchestration',
+    'k8s': 'Kubernetes Orchestration',
+    'sql': 'SQL & Database Management',
+    'mongodb': 'MongoDB & NoSQL',
+    'git': 'Git Version Control',
+    'linux': 'Linux System Administration',
+    'figma': 'Figma UI/UX Design',
+    'jira': 'Jira Project Management',
+    'scrum': 'Scrum Methodology',
+    'agile': 'Agile Methodology',
+    'rust': 'Rust Programming',
+    'go': 'Go Programming',
+    'golang': 'Go Programming',
+    'c#': 'C# Development',
+    'c++': 'C++ Development',
+    'swift': 'Swift Development',
+    'kotlin': 'Kotlin Development',
+    'flutter': 'Flutter Development',
+    'angular': 'Angular Development',
+    'vue': 'Vue.js Development',
+    'vue.js': 'Vue.js Development',
+    'next': 'Next.js Development',
+    'next.js': 'Next.js Development',
+    'graphql': 'GraphQL API Design',
+    'terraform': 'Terraform Infrastructure',
+    'ci/cd': 'CI/CD Pipeline Engineering',
+    'devops': 'DevOps Engineering',
+    'web3': 'Web3 Development',
+    'blockchain': 'Blockchain Technology',
+    'defi': 'DeFi Protocol Development',
+    'solidworks': 'SolidWorks Engineering',
+    'autocad': 'AutoCAD Design',
+    'excel': 'Microsoft Excel Advanced',
+    'power bi': 'Power BI Analytics',
+    'tableau': 'Tableau Data Visualization',
+    'machine learning': 'Machine Learning Engineering',
+    'ml': 'Machine Learning Engineering',
+    'ai': 'Artificial Intelligence',
+    'data science': 'Data Science & Analytics',
+    'cybersecurity': 'Cybersecurity',
+    'php': 'PHP Development',
+    'ruby': 'Ruby Development',
+    'rails': 'Ruby on Rails Development',
+    'django': 'Django Development',
+    'spring': 'Spring Framework',
+    'html': 'HTML & Web Standards',
+    'css': 'CSS & Styling',
+  };
+  const key = skill.toLowerCase().trim();
+  if (titleMap[key]) return titleMap[key];
+  // Si no está en el mapa, capitalizar profesionalmente
+  return skill.trim().split(/\s+/).map(w => {
+    if (['de', 'en', 'y', 'the', 'and', 'of', 'in', 'for'].includes(w.toLowerCase())) return w.toLowerCase();
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  }).join(' ');
+}
+
 async function buildCertificatePDF({ skill, score, level, wallet, issuedAt, contentHash, explorerUrl }) {
   const QRCode = require('qrcode');
+  const certTitle = formatCertificateTitle(skill);
 
   const verifyUrl = explorerUrl || `https://explorer-zk.tanenbaum.io/address/${CONTRACT_ADDRESS}`;
 
@@ -1903,9 +1968,10 @@ async function buildCertificatePDF({ skill, score, level, wallet, issuedAt, cont
     doc.fillColor('#a1a1aa').fontSize(12).font('Helvetica')
        .text('has successfully validated the skill', 60, midY + 60, { width: textW });
 
-    // ── Skill name ────────────────────────────────────────────────────────────
-    doc.fillColor('#10b981').fontSize(48).font('Helvetica-Bold')
-       .text(skill, 0, midY + 86, { align: 'center' });
+    // ── Skill name (título profesional) ─────────────────────────────────────
+    const titleSize = certTitle.length > 25 ? 36 : certTitle.length > 18 ? 42 : 48;
+    doc.fillColor('#10b981').fontSize(titleSize).font('Helvetica-Bold')
+       .text(certTitle, 0, midY + 86, { align: 'center' });
 
     // ── Score + Level boxes ───────────────────────────────────────────────────
     const boxY  = midY + 152;
@@ -2070,7 +2136,7 @@ const sdSessions = new Map();
 
 function getSdSession(roomId) {
   if (!sdSessions.has(roomId)) {
-    sdSessions.set(roomId, { cvData: null, userData: null, history: [], quizState: null, pendingCertificate: null, pendingQuiz: null, collectingUserData: null, lastActivity: Date.now() });
+    sdSessions.set(roomId, { cvData: null, userData: null, history: [], quizState: null, pendingCertificate: null, pendingQuiz: null, pendingQuizIntent: false, collectingUserData: null, lastActivity: Date.now() });
   }
   const s = sdSessions.get(roomId);
   s.lastActivity = Date.now();
@@ -2263,18 +2329,6 @@ async function sdCallLLM(messages, { tools, maxTokens = 800, temperature = 0.7 }
   return { provider: 'minimax', data: { choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: text } }] } };
 }
 
-async function sdEvaluateQuiz(skill, questions, answers) {
-  const prompt = 'Eres un evaluador técnico. El usuario respondió un quiz de "' + skill + '".\n\n' +
-    questions.map((q, i) => (i + 1) + '. ' + q.question + '\n   Respuesta: ' + (answers[i] || '(sin respuesta)')).join('\n') +
-    '\n\nDevuelve EXACTAMENTE este JSON (sin markdown):\n{"score":85,"level":"Mid","passed":true,"evaluation":"Evaluación breve en español."}';
-
-  const result = await sdCallLLM([{ role: 'user', content: prompt }], { maxTokens: 300, temperature: 0.2 });
-  const text   = result.data.choices[0].message.content.trim();
-  const match  = text.match(/\{[\s\S]*\}/);
-  if (!match) throw new Error('Respuesta del evaluador inválida');
-  return JSON.parse(match[0]);
-}
-
 async function sdExecuteTool(toolName, args, session) {
   console.log('[SD-TOOL]', toolName);
 
@@ -2298,14 +2352,26 @@ async function sdExecuteTool(toolName, args, session) {
     if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado. Primero analiza tu CV.' });
     const cv     = session.cvData;
     const target = (args.job_title ? ' para el puesto de ' + args.job_title : '') + (args.company ? ' en ' + args.company : '');
-    const prompt = 'Genera una carta de presentacion profesional en espanol' + target + ' para ' + (cv.name || 'el candidato') +
+    const prompt = 'Genera una carta de presentacion profesional en español' + target + ' para ' + (cv.name || 'el candidato') +
       ', ' + (cv.current_position || 'profesional') + ' con skills en ' + (cv.skills || []).slice(0, 5).join(', ') +
-      '. Formal, 3 párrafos, lista para enviar. Solo devuelve la carta.';
-    const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
-      { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: prompt }], max_tokens: 600 },
-      { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' } }
-    );
-    return JSON.stringify({ cover_letter: r.data.choices[0].message.content });
+      '. Formal, 3 párrafos, lista para enviar. Solo devuelve la carta, sin título ni encabezado adicional.';
+    let letter = '';
+    // Intentar Groq primero, fallback a callAI
+    if (GROQ_API_KEY) {
+      try {
+        const r = await axios.post('https://api.groq.com/openai/v1/chat/completions',
+          { model: 'llama-3.3-70b-versatile', messages: [{ role: 'user', content: prompt }], max_tokens: 600 },
+          { headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' }, timeout: 20000 }
+        );
+        letter = r.data.choices[0].message.content;
+      } catch(e) {
+        console.warn('[generate_cover_letter] Groq falló:', e.message, '— usando MiniMax');
+      }
+    }
+    if (!letter) {
+      letter = await callAI(prompt, { maxTokens: 600 });
+    }
+    return JSON.stringify({ cover_letter: letter });
   }
 
   if (toolName === 'start_skill_quiz') {
@@ -2348,7 +2414,11 @@ async function sdRunAgent(userMessage, session) {
   session.history.push({ role: 'user', content: userMessage });
   if (session.history.length > 20) session.history = session.history.slice(-20);
 
-  const systemPrompt = 'Eres LikeTalent, agente de validacion de talento Web3. Usa las herramientas disponibles cuando el usuario lo necesite.\n- Link de CV (Google Drive, PDF, DOCX) → analyze_cv\n- Optimizar CV → optimize_cv\n- Carta de presentacion → generate_cover_letter\n- Validar skill → start_skill_quiz\nNUNCA pidas wallet address ni menciones certificados blockchain a menos que el usuario explicitamente diga querer uno y proporcione una direccion 0x. Los certificados PDF se generan automaticamente al aprobar un quiz.\nResponde siempre en español, breve y útil.';
+  const cvContext = session.cvData ? `CV cargado: ${session.cvData.name || 'candidato'}, ${session.cvData.current_position || ''}, skills: ${(session.cvData.skills||[]).join(', ') || 'pendiente'}.` : '';
+  const systemPrompt = `Tu nombre es LikeTalent. Eres un agente de validacion de talento Web3. ${cvContext}
+Herramientas: analyze_cv(url), optimize_cv(lang), generate_cover_letter(job_title,company), start_skill_quiz(skill,level).
+Si ya hay CV cargado, usalo directamente. NUNCA pidas wallet ni menciones blockchain salvo que el usuario envíe 0x.
+Responde en español, breve y útil.`;
 
   const messages = [{ role: 'system', content: systemPrompt }, ...session.history];
 
@@ -2627,17 +2697,143 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
     return;
   }
 
-  // 3. Agente con tool calling
+  // 3. Detección de intención del agente — ejecutar herramientas directamente sin depender del LLM
+  const lower = text.toLowerCase();
+
+  // 3a. Quiz / validar skill: el agente inicia el quiz real con herramienta
+  const quizGeneric = ['un skill', 'una skill', 'skill', 'skil', 'skills', 'una habilidad', 'un conocimiento',
+    'mis skills', 'mis habilidades', 'habilidad', 'conocimiento', 'algo', 'cualquiera', 'lo que sea'];
+  const quizMatch = lower.match(/(?:validar|quiz|evaluar|certificar|examen|test)\s+(?:de\s+|en\s+|mi\s+|un\s+|una\s+)?([\w\s.#+áéíóúñ��]+)/i);
+  // También capturar "validar" o "quiero validar" sin skill especificado
+  const quizBare = !quizMatch && /^(?:validar|quiz|evaluar|certificar|examen|quiero\s+validar|hacer\s+quiz)\s*$/i.test(lower.trim());
+  if ((quizMatch || quizBare) && !session.quizState) {
+    const rawSkill = quizMatch ? quizMatch[1].trim() : '';
+    // Si el skill es genérico o muy corto, preguntar cuál
+    if (!rawSkill || quizGeneric.includes(rawSkill.toLowerCase()) || rawSkill.length < 3) {
+      // Sugerir skills del CV si está cargado
+      const cvSkills = session.cvData?.skills;
+      const suggestions = cvSkills && cvSkills.length > 0
+        ? cvSkills.slice(0, 6).map(s => `**${s}**`).join(', ')
+        : '**React**, **Python**, **GCP**, **Jira**, **Solidity**...';
+      const askMsg = `¿Qué skill quieres validar?\n\nOpciones: ${suggestions}\n\nTambién puedes indicar el nivel: básico, intermedio o avanzado.`;
+      session.history.push({ role: 'user', content: text });
+      session.history.push({ role: 'assistant', content: askMsg });
+      session.pendingQuizIntent = true;
+      await sendFn(askMsg);
+      return;
+    }
+    const level = lower.includes('senior') ? 'senior' : lower.includes('junior') ? 'junior' : 'mid';
+    console.log('[AGENT] Intención detectada: start_skill_quiz | skill:', rawSkill, '| level:', level);
+    try {
+      const result = await sdExecuteTool('start_skill_quiz', { skill: rawSkill, level }, session);
+      const data = JSON.parse(result);
+      if (data.error === 'need_user_data') {
+        session.history.push({ role: 'user', content: text });
+        session.history.push({ role: 'assistant', content: data.message });
+        await sendFn(data.message);
+      } else if (data.quiz_started) {
+        let msg = `**Quiz: ${data.skill}** — Pregunta 1/${data.total_questions}\n\n${data.question}`;
+        if (data.options) msg += '\n\n' + data.options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+        session.history.push({ role: 'user', content: text });
+        session.history.push({ role: 'assistant', content: msg });
+        await sendFn(msg);
+      } else {
+        await sendFn(data.error || 'No se pudo generar el quiz. Intenta de nuevo.');
+      }
+    } catch(e) {
+      console.error('[AGENT] Error quiz:', e.message);
+      await sendFn('Error iniciando quiz: ' + e.message);
+    }
+    return;
+  }
+
+  // 3a-bis. Respuesta pendiente de quiz: el usuario indica el skill después de que se le preguntó
+  if (session.pendingQuizIntent && !session.quizState) {
+    session.pendingQuizIntent = false;
+    const level = lower.includes('senior') ? 'senior' : lower.includes('junior') ? 'junior' : 'mid';
+    const skill = text.replace(/\b(junior|mid|senior|nivel)\b/gi, '').trim();
+    if (skill.length < 2) {
+      await sendFn('Indica el nombre del skill. Ejemplo: **React**, **Python**, **GCP**.');
+      session.pendingQuizIntent = true;
+      return;
+    }
+    console.log('[AGENT] Quiz pendiente resuelto | skill:', skill, '| level:', level);
+    try {
+      const result = await sdExecuteTool('start_skill_quiz', { skill, level }, session);
+      const data = JSON.parse(result);
+      if (data.error === 'need_user_data') {
+        session.history.push({ role: 'user', content: text });
+        session.history.push({ role: 'assistant', content: data.message });
+        await sendFn(data.message);
+      } else if (data.quiz_started) {
+        let msg = `**Quiz: ${data.skill}** — Pregunta 1/${data.total_questions}\n\n${data.question}`;
+        if (data.options) msg += '\n\n' + data.options.map((o, i) => `${i + 1}. ${o}`).join('\n');
+        session.history.push({ role: 'user', content: text });
+        session.history.push({ role: 'assistant', content: msg });
+        await sendFn(msg);
+      } else {
+        await sendFn(data.error || 'No se pudo generar el quiz. Intenta de nuevo.');
+      }
+    } catch(e) {
+      console.error('[AGENT] Error quiz:', e.message);
+      await sendFn('Error iniciando quiz: ' + e.message);
+    }
+    return;
+  }
+
+  // 3b. Carta de presentación: el agente detecta y ejecuta
+  if (session.cvData) {
+    if (lower.includes('carta') && lower.includes('presentaci')) {
+      const parts = text.match(/(?:de|como|puesto)?\s*([\w\s]+?)(?:\s+(?:en|para|at|empresa)\s+)([\w\s]+)/i);
+      const jobTitle = parts ? parts[1].trim() : '';
+      const company = parts ? parts[2].trim() : '';
+      if (jobTitle && company) {
+        console.log('[AGENT] Intención detectada: generate_cover_letter | job:', jobTitle, '| company:', company);
+        await sendFn('Generando carta de presentación...');
+        try {
+          const result = await sdExecuteTool('generate_cover_letter', { job_title: jobTitle, company }, session);
+          const data = JSON.parse(result);
+          if (data.cover_letter) {
+            session.history.push({ role: 'user', content: text });
+            session.history.push({ role: 'assistant', content: data.cover_letter });
+            await sendFn(data.cover_letter);
+          } else {
+            await sendFn('No pude generar la carta. Intenta de nuevo.');
+          }
+        } catch(e) {
+          console.error('[AGENT] Error cover letter:', e.message);
+          await sendFn('Error generando la carta: ' + e.message);
+        }
+        return;
+      }
+    }
+
+    // 3c. Optimizar CV: el agente detecta y ejecuta
+    if (lower.includes('optimiz') && (lower.includes('cv') || lower.includes('currículum') || lower.includes('curriculum'))) {
+      const lang = lower.includes('english') || lower.includes('inglés') || lower.includes('ingles') ? 'en' : 'es';
+      console.log('[AGENT] Intención detectada: optimize_cv | lang:', lang);
+      await sendFn('Optimizando tu CV...');
+      try {
+        const result = await sdExecuteTool('optimize_cv', { lang }, session);
+        const data = JSON.parse(result);
+        const reply = data.error
+          ? data.error
+          : `**CV Optimizado** ✅\n\nATS Score: **${data.ats_score || 'N/A'}**\n\n${data.professional_summary || ''}`;
+        session.history.push({ role: 'user', content: text });
+        session.history.push({ role: 'assistant', content: reply });
+        await sendFn(reply);
+      } catch(e) {
+        console.error('[AGENT] Error optimize:', e.message);
+        await sendFn('Error optimizando: ' + e.message);
+      }
+      return;
+    }
+  }
+
+  // 4. Agente LLM con tool calling (fallback general)
   const reply = await sdRunAgent(text, session);
   await sendFn(reply);
 
-  // Si el agente inició un quiz, enviar primera pregunta
-  if (session.quizState && session.quizState.current === 0) {
-    const q = session.quizState.questions[0];
-    let msg = 'Pregunta 1/' + session.quizState.questions.length + '\n\n' + q.question;
-    if (q.options) msg += '\n\n' + q.options.map((o, i) => (i + 1) + '. ' + o).join('\n');
-    await sendFn(msg);
-  }
 }
 
 // ── SuperDapp Webhook ─────────────────────────────────────────────────────────
@@ -2686,6 +2882,17 @@ async function tgSend(chatId, text) {
   }
 }
 
+async function tgSendDocument(chatId, buffer, filename, caption) {
+  const FormData = require('form-data');
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  form.append('document', buffer, { filename: filename || 'documento.pdf', contentType: 'application/pdf' });
+  if (caption) form.append('caption', caption);
+  await axios.post('https://api.telegram.org/bot' + TELEGRAM_TOKEN + '/sendDocument', form, {
+    headers: form.getHeaders(), timeout: 30000
+  });
+}
+
 if (TELEGRAM_TOKEN) {
   console.log('[Telegram] Bot configurado');
 } else {
@@ -2705,7 +2912,14 @@ app.post('/telegram', async function(req, res) {
     const isBot  = message.from && message.from.is_bot;
     if (isBot) return;
 
-    const sendFn = async (msg) => tgSend(chatId, msg);
+    const sendFn = async (msg, file) => {
+      if (file) {
+        if (msg) await tgSend(chatId, msg);
+        await tgSendDocument(chatId, file.buffer, file.name);
+      } else {
+        await tgSend(chatId, msg);
+      }
+    };
     await handleMessage(text, 'tg_' + chatId, sendFn, 'Telegram');
   } catch(e) {
     console.error('[Telegram] Error:', e.message);
@@ -2791,13 +3005,17 @@ if (DISCORD_TOKEN) {
             const result = await sdExecuteTool('analyze_cv', { url: attachment.url }, session);
             console.log('[Discord] → sdExecuteTool analyze_cv END');
             const data = JSON.parse(result);
+            const score = data.score || data.overall_score || session.cvData?.overall_score || 0;
             const reply = `**Análisis de CV completado** ✅\n\n` +
               `👤 **${data.name || 'Sin nombre'}** — ${data.current_position || ''}\n` +
-              `📊 Score: **${data.score || 0}/100** | Web3: ${data.web3_relevance || 'N/A'}\n` +
+              `📊 Score: **${score}/100** | Web3: ${data.web3_relevance || 'N/A'}\n` +
               `🛠 Skills: ${(data.skills || []).slice(0, 6).join(', ')}\n` +
               `💡 Mejoras: ${(data.improvements || []).slice(0, 2).join(' | ')}\n\n` +
-              `Puedes pedirme: optimizar CV, generar carta de presentación o validar un skill.`;
+              `Puedes pedirme: **optimizar CV**, **carta de presentación** o **validar un skill**.`;
             await sendFn(reply);
+            // Guardar en historial para que el agente sepa que ya tiene CV
+            const cvSummary = `[CV CARGADO] Analicé el CV de ${data.name || 'usuario'}. Posición: ${data.current_position || 'no especificada'}. Skills: ${(data.skills||[]).join(', ') || 'pendiente de análisis'}. Score: ${score}/100. El CV ya está en mi memoria, puedo optimizarlo, generar carta de presentación o hacer quiz sin pedirlo de nuevo.`;
+            getSdSession(sessionKey).history.push({ role: 'assistant', content: cvSummary });
           } else {
             console.log('[Discord] Adjunto no es CV, ignorando ext:', ext);
             await sendFn('Solo acepto archivos PDF, DOCX o TXT.');

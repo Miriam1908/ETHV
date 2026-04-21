@@ -277,7 +277,26 @@ async function executeTool(toolName, args, session) {
 
   if (toolName === 'start_skill_quiz') {
     const result    = await callBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es' });
-    const questions = result.questions || [];
+    if (toolName === 'start_skill_quiz') {
+  await wakeBackend();
+  const result = await callBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es' });
+  if (!result.quizId || !result.question) return JSON.stringify({ error: 'No se pudo generar el quiz.' });
+  session.quizState = {
+    skill: args.skill,
+    quizId: result.quizId,
+    total: result.total,
+    current: 0,
+    answers: [],
+    questions: [result.question]
+  };
+  return JSON.stringify({
+    quiz_started: true,
+    skill: args.skill,
+    total_questions: result.total,
+    first_question: result.question.question,
+    options: result.question.options || null
+  });
+}
     if (!questions.length) return JSON.stringify({ error: 'No se pudo generar el quiz.' });
     session.quizState = { skill: args.skill, questions, current: 0, answers: [] };
     const q = questions[0];

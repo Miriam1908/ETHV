@@ -2285,25 +2285,16 @@ async function sdExecuteTool(toolName, args, session) {
     return JSON.stringify({ cover_letter: r.data.choices[0].message.content });
   }
 
-if (toolName === 'start_skill_quiz') {
-    const result = await sdCallBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es' });
-    if (!result.quizId || !result.question) return JSON.stringify({ error: 'No se pudo generar el quiz.' });
-    session.quizState = {
-      skill: args.skill,
-      quizId: result.quizId,
-      total: result.total,
-      current: 0,
-      answers: [],
-      questions: [result.question]
-    };
-    return JSON.stringify({
-      quiz_started: true,
-      skill: args.skill,
-      total_questions: result.total,
-      first_question: result.question.question,
-      options: result.question.options || null
-    });
+  if (toolName === 'start_skill_quiz') {
+    const result    = await sdCallBackend('/api/generate-quiz', { skill: args.skill, level: args.level || 'mid', lang: 'es' });
+    const questions = result.questions || [];
+    if (!questions.length) return JSON.stringify({ error: 'No se pudo generar el quiz.' });
+    session.quizState = { skill: args.skill, questions, current: 0, answers: [] };
+    const q = questions[0];
+    return JSON.stringify({ quiz_started: true, skill: args.skill, total_questions: questions.length,
+      first_question: q.question, options: q.options || null });
   }
+
   if (toolName === 'mint_certificate') {
     if (!ethers.isAddress(args.wallet_address)) return JSON.stringify({ error: 'Wallet address inválida.' });
     const result = await sdMintOnChain(args.wallet_address, args.skill, args.score, args.level, session.cvData);

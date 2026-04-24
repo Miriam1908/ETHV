@@ -2368,6 +2368,7 @@ function sdRegisterHandlers() {
 
 // ── Sesiones ──────────────────────────────────────────────────────────────────
 const sdSessions = new Map();
+const cvFiles = new Map();
 
 function getSdSession(roomId) {
   if (!sdSessions.has(roomId)) {
@@ -2580,7 +2581,11 @@ async function sdExecuteTool(toolName, args, session) {
   if (toolName === 'optimize_cv') {
     if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado. Primero analiza tu CV.' });
     const result = await sdCallBackend('/api/improve-cv', { cvData: session.cvData, lang: args.lang || 'es' });
-    return JSON.stringify({ ats_score: result.ats_score, professional_summary: result.professional_summary || result.summary });
+    const fileId = Date.now().toString(36);
+    cvFiles.set(fileId, { cvData: session.cvData, improved: result });
+    setTimeout(() => cvFiles.delete(fileId), 30 * 60 * 1000);
+    const downloadLink = 'https://ethv-yanx.onrender.com/cv-download/' + fileId;
+    return JSON.stringify({ ats_score: result.ats_score, professional_summary: result.professional_summary || result.summary, download_link: downloadLink });
   }
 
   if (toolName === 'generate_cover_letter') {
@@ -3048,7 +3053,7 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
         const data = JSON.parse(result);
         const reply = data.error
           ? data.error
-          : `**CV Optimizado** ✅\n\nATS Score: **${data.ats_score || 'N/A'}**\n\n${data.professional_summary || ''}`;
+          : `**CV Optimizado** ✅\n\nATS Score: **${data.ats_score || 'N/A'}**\n\n${data.professional_summary || ''}\n\n📄 Descarga tu CV optimizado aquí: ${data.download_link || ''}`;
         session.history.push({ role: 'user', content: text });
         session.history.push({ role: 'assistant', content: reply });
         await sendFn(reply);
@@ -3263,7 +3268,19 @@ if (DISCORD_TOKEN) {
 } else {
   console.log('[Discord] DISCORD_TOKEN no configurado');
 }
-
+app.get('/cv-download/:id', async (req, res) => {
+  const entry = cvFiles.get(req.params.id);
+  if (!entry) return res.status(404).json({ error: 'Link expirado' });
+  try {
+    const response = await axios.post('http://localhost:' + PORT + '/api/download-cv-docx',
+      { cvData: entry.cvData, improved: entry.improved },
+      { timeout: 90000, responseType: 'arraybuffer' }
+    );
+    res.setHeader('Content-Disposition', 'attachment; filename="CV_ATS_Optimizado.docx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.send(Buffer.from(response.data));
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
 app.listen(PORT, () => {
   console.log('LikeTalent Backend running on http://localhost:' + PORT);
   console.log('Supabase URL:', SUPABASE_URL || 'NO configurado');

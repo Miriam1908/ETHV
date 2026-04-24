@@ -2896,7 +2896,11 @@ async function handleMessage(text, sessionKey, sendFn, platform) {
             contentHash: null, explorerUrl: null
           });
           console.log('[QUIZ] PDF generado | tamaño:', pdfBuffer.length, 'bytes');
-          await sendFn('🎓 Tu certificado está listo:', { buffer: pdfBuffer, name: `certificado-${savedQuiz.skill.replace(/\s+/g,'-')}.pdf` });
+          const certId = Date.now().toString(36);
+cvFiles.set(certId, { pdfBuffer, isCert: true });
+setTimeout(() => cvFiles.delete(certId), 30 * 60 * 1000);
+const certLink = 'https://ethv-yanx.onrender.com/cert-download/' + certId;
+await sendFn('🎓 Tu certificado está listo!\n\n📄 Descárgalo aquí: ' + certLink);
         } catch(e) {
           console.error('[QUIZ] Error generando PDF:', e.message, e.stack?.split('\n')[1]);
           await sendFn('Hubo un error generando el PDF. Contacta al soporte.');
@@ -3280,6 +3284,13 @@ app.get('/cv-download/:id', async (req, res) => {
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
     res.send(Buffer.from(response.data));
   } catch(e) { res.status(500).json({ error: e.message }); }
+});
+app.get('/cert-download/:id', async (req, res) => {
+  const entry = cvFiles.get(req.params.id);
+  if (!entry || !entry.isCert) return res.status(404).json({ error: 'Link expirado' });
+  res.setHeader('Content-Disposition', 'attachment; filename="Certificado_LikeTalent.pdf"');
+  res.setHeader('Content-Type', 'application/pdf');
+  res.send(entry.pdfBuffer);
 });
 app.listen(PORT, () => {
   console.log('LikeTalent Backend running on http://localhost:' + PORT);

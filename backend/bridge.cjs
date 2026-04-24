@@ -311,7 +311,7 @@ async function runAgent(userMessage, session) {
       let args = {};
       try { args = JSON.parse(toolCall.function.arguments); } catch(e) {}
       let toolResult;
-      try { toolResult = await executeTool(toolName, args, session)
+      try { toolResult = await executeTool(toolName, args, session); }
       catch(e) { console.error('[TOOL ERROR]', toolName, e.message); toolResult = JSON.stringify({ error: e.message }); }
       messages.push({ role: 'tool', tool_call_id: toolCall.id, content: toolResult });
     }

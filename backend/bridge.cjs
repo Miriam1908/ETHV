@@ -288,7 +288,7 @@ async function executeTool(toolName, args, session) {
 async function runAgent(userMessage, session) {
   session.history.push({ role: 'user', content: userMessage });
   if (session.history.length > 20) session.history = session.history.slice(-20);
-  const systemPrompt = 'Eres LikeTalent, agente de validacion de talento Web3. Usa las herramientas cuando el usuario lo necesite.\n- Link de CV (Google Drive, PDF, DOCX) → analyze_cv\n- Optimizar CV → optimize_cv\n- Carta de presentacion → generate_cover_letter\n- Validar skill → start_skill_quiz\n- Wallet (0x...) con certificado pendiente → mint_certificate\nResponde siempre en espanol, breve y util.';
+  const systemPrompt = 'Eres LikeTalent, agente de validacion de talento Web3. Usa las herramientas cuando el usuario lo necesite.\n- Link de CV (Google Drive, PDF, DOCX) → analyze_cv\n- Optimizar CV → optimize_cv\n- Carta de presentacion → generate_cover_letter\n- Validar skill → start_skill_quiz\n- Wallet (0x...) con certificado pendiente → mint_certificate\nResponde siempre en espanol, breve y util.\n- Cuando optimices un CV, SIEMPRE incluye el link de descarga diciendo: Descarga tu CV optimizado aqui: [el download_link del resultado]';
   const messages = [{ role: 'system', content: systemPrompt }, ...session.history];
   let rounds = 0;
   while (rounds < MAX_TOOL_ROUNDS) {

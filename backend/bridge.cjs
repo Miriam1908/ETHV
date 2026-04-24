@@ -31,6 +31,7 @@ const app = express();
 app.use(express.json());
 
 const sessions = new Map();
+const cvFiles = new Map();
 
 function getSession(roomId) {
   if (!sessions.has(roomId)) {
@@ -222,10 +223,16 @@ async function executeTool(toolName, args, session) {
   if (toolName === 'optimize_cv') {
     if (!session.cvData) return JSON.stringify({ error: 'No hay CV analizado. Primero analiza tu CV.' });
     const result = await callBackend('/api/improve-cv', { cvData: session.cvData, lang: (args && args.lang) || 'es' });
+    session.improvedCv = result;
+    const fileId = Date.now().toString(36);
+    cvFiles.set(fileId, { cvData: session.cvData, improved: result });
+    setTimeout(() => cvFiles.delete(fileId), 30 * 60 * 1000);
+    const downloadLink = BACKEND_URL.replace('ethv.onrender.com', 'ethv-yanx.onrender.com') + '/cv-download/' + fileId;
     return JSON.stringify({
       ats_score: result.ats_score,
       professional_summary: result.professional_summary || result.summary,
-      optimized_skills: result.skills
+      optimized_skills: result.skills,
+      download_link: downloadLink
     });
   }
 
@@ -304,7 +311,7 @@ async function runAgent(userMessage, session) {
       let args = {};
       try { args = JSON.parse(toolCall.function.arguments); } catch(e) {}
       let toolResult;
-      try { toolResult = await executeTool(toolName, args, session); }
+      try { toolResult = await executeTool(toolName, args, session)
       catch(e) { console.error('[TOOL ERROR]', toolName, e.message); toolResult = JSON.stringify({ error: e.message }); }
       messages.push({ role: 'tool', tool_call_id: toolCall.id, content: toolResult });
     }
@@ -418,5 +425,17 @@ app.get('/health', function(req, res) {
 setInterval(function() {
   axios.get(BACKEND_URL + '/health').catch(function() {});
 }, 14 * 60 * 1000);
-
+app.get('/cv-download/:id', async (req, res) => {
+  const entry = cvFiles.get(req.params.id);
+  if (!entry) return res.status(404).json({ error: 'Link expirado o no existe' });
+  try {
+    const response = await callBackend('/api/download-cv-docx', { cvData: entry.cvData, improved: entry.improved });
+    const buffer = Buffer.from(response.docxBase64, 'base64');
+    res.setHeader('Content-Disposition', 'attachment; filename="CV_ATS_Optimizado.docx"');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+    res.send(buffer);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 app.listen(PORT, function() { console.log('[LikeTalent] Agente listo en puerto', PORT); });
